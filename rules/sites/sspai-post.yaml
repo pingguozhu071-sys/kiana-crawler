@@ -1,0 +1,16 @@
+# 少数派文章页（v2.17 1-1 实测取证——2026-08-30 IAB 真实渲染
+# https://sspai.com/post/113974 验证：h1.article__header__title /
+# article.normal-article（正文，含作者/日期）/ div.article__header__author）
+name: sspai-post
+match: [sspai.com]
+exclude: [/bullet/, /topic/, /column/]
+item_type: article
+
+detail:
+  fields:
+    title: {sel: "h1.article__header__title, h1", text: true}
+    author: {sel: "div.article__header__author, .article__header__author", text: true}
+    content: {sel: "article.normal-article, article", text: true}
+
+media:
+  images: {sel: "article.normal-article img, article img", attr: src}

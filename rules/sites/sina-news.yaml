@@ -1,0 +1,14 @@
+# 新浪新闻（v2.16.1 规则层落地；v2.17 真机冒烟修 bug——标题此前抽到导航 h1.channel-logo
+# "新闻中心"：新浪文章页有两个 h1（导航+正文标题），select_one(h1) 必中导航。改用
+# :not(.channel-logo) 排除；2026-08-30 实机验证 og:title/内容一致）
+name: sina-news
+match: [sina.com.cn]
+item_type: article
+
+detail:
+  fields:
+    title: {sel: "h1.main-title, h1:not(.channel-logo), h1", text: true}
+    content: {sel: "div.article, div#article, div.article-content", text: true}
+
+media:
+  images: {sel: "div.article img, div#article img", attr: src}

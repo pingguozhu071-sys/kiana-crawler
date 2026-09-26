@@ -1,0 +1,48 @@
+# 大体积/二进制产物不入库
+KianaVnextPlus-Setup-*.exe
+*.exe
+*.part
+*.ytdl
+build/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+icon_new.ico
+x36xhzz*.mp4*
+__cookies_guard__
+
+# [v2.17.1 凭据卫生] 用户 cookies/密钥产物一律不得入库（门禁第 10 项强制）
+*cookies*.txt
+*cookie*.txt
+*.kdbx
+
+# [v2.18.3 打理] 运行/验证产物不入库（此前 .coverage 与 .tmp_* 曾被误跟踪）
+.mypy_cache/
+.ruff_cache/
+.coverage
+.tmp_vfy/
+.tmp_test_projects/
+
+# [v2.19 安全] 便携数据根与主密钥不入库（原缺失：KIANA_PORTABLE=1 会在仓库根
+# 建 KianaData/master.key.bin 而不被忽略）
+master.key*
+KianaData/
+http_cache/
+
+# [v2.19.7] AI 会话的本机专用上下文（含本机绝对路径/已装版本位置）。
+# 不忽略会让门禁第 2 项（git status 必须干净，未跟踪文件也算脏）直接 FAIL。
+.claude.local.md
+
+# [v2.19.8 对外发布] 冒烟/截图脚本的产物不入库。此前 gui_shots/ 下的窗口截图
+# 未被忽略，跑一次 v9_smoke.py 就会重新落盘并可能被误提交——截图里会带本机
+# 用户名路径与签名水印，属于"扫描器查不出来"的像素级泄漏，从忽略规则上根治。
+# 注意：只忽略产物，tests/assets 下的真实样本（*.html / 图片 / abogus_vectors.json）不受影响。
+tests/assets/gui_shots/
+tests/assets/v9_smoke_result.txt
+tests/assets/v9_engine_result.txt
+tests/assets/v9mini_trace.txt
+tests/assets/diag.txt
+tools/fluent_smoke.png
+tools/*_smoke.png

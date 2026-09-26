@@ -1,0 +1,75 @@
+═══════════════════════════════════════════════
+  Kiana Vnext Plus v2.19.8 · 使用说明
+═══════════════════════════════════════════════
+
+【是什么】
+Windows 桌面端「全能数据采集引擎」：
+  · 多平台视频/番剧下载（B站 · YouTube · 抖音 · 快手 · 小红书 · 网易云 · 腾讯视频 · 爱奇艺等 60+ 平台）
+  · 全网数据采集（网页正文/标题/图片/链接/结构化数据 · 广撒网）
+  · 反反爬/隐身（浏览器指纹伪装 · TLS 模拟 · 验证码求解 · 反自动化检测）
+  · 即装即用（PyInstaller 自包含 + NSIS 安装包，ffmpeg/ddddocr/Chromium 全打包，换机一个包搞定）
+
+═══════════════════════════════════════════════
+【安装方式】
+  · 安装版:   KianaVnextPlus-Setup-*.exe   双击安装（默认 %LOCALAPPDATA%\Programs\KianaVnextPlus）
+  · 免安装:   dist\KianaLauncher\    (GUI onedir——双击目录内 KianaLauncher.exe)
+              dist\KianaCrawler\     (CLI onedir)
+
+═══════════════════════════════════════════════
+【运行方式】
+  GUI  : 双击 KianaLauncher.exe → 输入网址 → 配置参数 → 开始爬取
+         （v2.16.1 首页新增画质档位下拉：自动/4K/2K/1080P/720P/480P + 字幕/封面/详情开关）
+  CLI  : KianaCrawler.exe "<URL>" -d 深度 -m 页数 -o 输出目录
+         python run_crawler.py "<URL>" -d 1 -m 10 -o <输出目录>
+  CLI 附加参数:
+         --cookie-file "站点cookies.txt"   (用户自填密钥，分号分隔多个，不打包)
+         --no-video / --no-image / --dl-audio
+         --no-sanitize                    (关闭内容脱敏)
+         --filter "关键词1,关键词2"        (内容过滤白名单)
+
+═══════════════════════════════════════════════
+【登录密钥 (cookies) —— 用户自填，不打包】
+  · 作用: B站会员最高画质 / 抖音登录态 / 贴吧等站点免登录墙
+  · 来源: 浏览器扩展 Get cookies.txt LOCALLY 导出 Netscape 格式
+  · 位置:
+      GUI 首页「B站会员Cookie」框 / CLI --cookie-file
+      留空则用默认 %LOCALAPPDATA%\KianaVnextPlus\cookies.txt
+  · 多站: 多个 cookies.txt 用分号分隔（B站;抖音;贴吧 各自导出合并使用）
+  · 失效: 换设备/过期后重新导出即可；密钥永远不进入程序包
+
+═══════════════════════════════════════════════
+【LLM 智能增强（选填，v2.16.1 起默认关闭）】
+  · 作用: 任务完成后对采集数据做中文摘要/分类等增强（写入 _llm 字段，不覆盖原数据）
+  · 位置: 设置页「LLM 智能增强」卡（开关 + API 地址 + 模型 + Key + 月度预算）
+  · 默认: 关闭（关闭=零开销；Key/地址不填齐也不会启用）
+  · 预算: 月度条数上限（llm_budget_month 默认 500），超限自动跳过不做后续
+
+═══════════════════════════════════════════════
+【产物结构】
+  <输出目录>/cli_<随机>/
+    ├── export/
+    │   ├── data/<域名>/   采集数据 (jsonl + csv，14 字段)
+    │   ├── images/<域名>/ 图片
+    │   └── videos/<域名>/ 视频（番剧按集命名）
+    ├── frontier.db       队列状态 (SQLite)
+    └── logs/             运行日志
+
+═══════════════════════════════════════════════
+【浏览器渲染 / 验证码】
+  用于 JS 重站点（贴吧列表/动态页/GeeTest 验证码）：
+  · 安装: python -m patchright install chromium
+  · 首次运行自动检测 %LOCALAPPDATA%\ms-playwright
+
+═══════════════════════════════════════════════
+【开发/构建】
+  一键构建.bat            (PyInstaller 双 exe + NSIS)
+  KianaLauncher.spec      (GUI onefile)
+  KianaCrawler.spec       (CLI onedir)
+  kiana_setup.nsi         (NSIS 安装器，UTF-8 BOM)
+  源码运行: python launcher_v8.py / python run_crawler.py "<URL>"
+
+【开发铁律】
+  · 改 B站/视频链路后必须回归普通网站采集
+  · crawler.py 大文件用 patch 改（带唯一上下文），禁止整文件重写
+  · VBS/NSIS 脚本必须 UTF-8 BOM（否则中文乱码）
+  · cookies.txt 是本机密钥——绝不打包进 exe / 提交 git

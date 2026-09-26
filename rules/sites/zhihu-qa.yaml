@@ -1,0 +1,20 @@
+# 知乎问答页（v2.17 5.3 实测对齐——2026-08-30 IAB 真实浏览器（真实指纹/渲染）打开
+# https://www.zhihu.com/question/634653445 验证并保存真实 DOM 片段
+# tests/assets/zhihu_question_sample.html；class 为知乎现网稳定语义类
+# （QuestionHeader-title/QuestionRichText/AnswerItem/UserLink.AuthorInfo-name——非哈希）。
+# 注意：知乎对无浏览器出口有反爬挑战页；本规则依赖真实渲染 DOM（配合页面通道/浏览器场景）。
+name: zhihu-qa
+match: [zhihu.com]
+item_type: qa
+
+detail:
+  fields:
+    title: {sel: "h1.QuestionHeader-title, h1", text: true}
+    question: {sel: "div.QuestionRichText", text: true}
+
+# 回答列表（保存到 data['list_items']；item_link 相对/绝对 URL 统一补全为绝对链接）
+list:
+  selector: "div.AnswerItem.ContentItem"
+  fields:
+    author: {sel: "span.UserLink.AuthorInfo-name, h2.AuthorInfo-name", text: true}
+    item_link: {sel: "a[href*='/answer/']", attr: href}

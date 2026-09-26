@@ -1,0 +1,57 @@
+# Kiana Vnext Plus 运行依赖（v2.14 锁定版——本机实测版本 pin）
+# [FIXED & MODIFIED] v2.14 阶段4 供应链：全 pin 死版本（下方每条为本机验证过的组合，
+# 由 pip freeze 生成），一键构建.bat 改为 pip install -r 本文件（去 --upgrade 防升级炸包）。
+# 与实际 import 逐一核对（v2.14 深查）：删 justext/aiodns（零 import），
+# 补 openpyxl（xlsx 导出）/qfluentwidgets（v9 Fluent GUI 主入口）。
+
+# ── 引擎核心 ──
+omegaconf==2.3.1
+aiosqlite==0.22.1
+aiofiles==25.1.0
+orjson==3.11.9
+pyyaml==6.0.3            # omegaconf 传递依赖，显式声明
+psutil==7.2.2
+# （v2.16.1 移除）aiohttp==3.13.1 历史遗留：全仓库零 import（m3u8 早改为 aiofiles）
+
+# ── 网络与指纹 ──
+curl_cffi==0.16.0        # TLS 指纹模拟主通道
+yt-dlp==2026.7.4         # 视频下载核心
+
+# ── 解析 ──
+beautifulsoup4==4.15.0
+lxml==6.1.1              # parser 以字符串 "lxml" 传给 BeautifulSoup
+trafilatura==2.2.0       # 正文提取兜底
+
+# ── 浏览器 ──
+patchright==1.61.2       # 渲染主通道（playwright API 兼容层）
+playwright==1.62.0       # patchright 回退
+
+# ── 验证码 ──
+ddddocr==1.6.1           # 本地 OCR
+opencv-python==5.0.0.93  # slider_vision 缺口识别
+numpy==2.5.2
+2captcha-python==2.1.0   # 打码 API（密钥自填才用）
+
+# ── 安全 ──
+cryptography==50.0.0     # Fernet（Cookie 弹药库加密）
+pycryptodome==3.23.0     # m3u8 AES-128 解密
+
+# ── 导出 ──
+openpyxl==3.1.5          # xlsx 导出（v2.13）
+
+# ── GUI ──
+PySide6==6.11.1
+PySide6-Fluent-Widgets==1.11.3   # qfluentwidgets（v2.12 Fluent 壳主入口）
+
+# ── 预留接口 ──
+redis==8.1.0             # redis_frontier（frontier_backend=redis 时才需要）
+
+# ── YouTube 支持（可选，v2.14 实测组件）──
+# 三件套：bgutil 插件 + Node PO Token server（TEMP\bgutil-pot/server, node build/main.js
+# 监听 :4416）+ deno JS 运行时（yt-dlp EJS 挑战）。另需 KIANA_PROXY_LIST 喂可用代理。
+# 已验证：元数据/格式列表/页面通道全通；媒体流 403 受出口 IP 风控影响（换干净代理即可）。
+bgutil-ytdlp-pot-provider==1.3.2
+
+# ── B站弹幕 ASS 副产物（可选，[v2.17 2.4] 需要时手动安装：pip install biliass==1.3.13）──
+# 未安装时引擎自动跳过 ASS 转换（弹幕 XML 数据仍正常采集），不阻塞任务。
+gmssl==3.2.2        # BSD 许可哈希库（a_bogus 签名 SM3 层；来源声明见 docs）

@@ -1,0 +1,18 @@
+# 微博帖子页（v2.17 5.3 实测对齐——2026-08-30 IAB 真实浏览器打开
+# https://weibo.com/7064960756/RfLkA5pKv 验证并保存真实 DOM 片段
+# tests/assets/weibo_post_sample.html。
+# 正文用 weibo 设计系统语义类（wbpro-feed-ogText/wbpro-feed-content，非构建哈希，抗改版）；
+# 作者/时间为构建哈希类（_nick_/_time_，改版可能变）——诚实标注弱稳定，变则 rule-test 自验。
+name: weibo-post
+match: [weibo.com]
+item_type: post
+
+detail:
+  fields:
+    author: {sel: "div[class*='_nick_']", text: true}
+    published: {sel: "a[class*='_time_']", text: true, transform: date_parse}
+    content: {sel: "div.wbpro-feed-ogText, div.wbpro-feed-content", text: true}
+
+media:
+  # 排除头像/VIP 徽标/播放器占位（实测样本: woo-avatar-img/vjs-avatar/icon-link/woo-icon-vipimg）
+  images: {sel: "article.woo-panel-main img:not(.woo-avatar-img):not(.vjs-avatar):not(.icon-link):not(.woo-icon-vipimg)", attr: src}

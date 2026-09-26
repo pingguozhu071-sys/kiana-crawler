@@ -1,0 +1,16 @@
+# Kiana 站点规则（example.com）
+# 编辑保存后下次爬取自动生效（热加载）。字段说明见 rules/README 或项目文档。
+name: example_com
+match: [example.com]
+item_type: article
+
+detail:
+  fields:
+    title: {sel: "h1", text: true}
+    content: {sel: "article, .content, #content", text: true}
+
+media:
+  images: {sel: "img", attr: src}
+
+pagination:
+  next: {sel: "a.next", attr: href}

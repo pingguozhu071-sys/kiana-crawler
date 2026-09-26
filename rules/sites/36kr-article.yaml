@@ -1,0 +1,18 @@
+# 36氪文章页（v2.17 1-1 实测取证——2026-08-30 IAB 渲染
+# https://www.36kr.com/p/3961343456443527 验证：h1.article-title /
+# span.title-icon-item.item-time / a.author-avrtar 均已命中；
+# 正文区（div.article-word 等）为懒加载区，选择器尽力链——抽不中走通用抽取兜底）
+name: 36kr-article
+match: [36kr.com]
+exclude: [/flipboard/, /newsflash/]
+item_type: article
+
+detail:
+  fields:
+    title: {sel: "h1.article-title, h1", text: true}
+    time: {sel: "span.title-icon-item.item-time", text: true}
+    author: {sel: "a.author-avrtar, a[class*='author']", text: true}
+    content: {sel: "div.article-word, div.article-content, article", text: true}
+
+media:
+  images: {sel: "div.article-word img, div.article-content img, article img", attr: src}

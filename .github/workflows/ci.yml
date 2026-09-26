@@ -1,0 +1,70 @@
+name: CI
+
+# Kiana Vnext Plus 持续集成（v2.19.3 新增）
+#
+# 目标：把"发版门禁"里**可离线执行**的三项自动化——版本四件套一致性、静态检查、全量测试。
+# 现状对比：此前门禁全靠手工跑 tools/release_check.py，换人/换机即失去保护（评估报告 P2-17）。
+#
+# 说明：
+#  · 全部步骤**不依赖网络**（测试套件本身零网络依赖，已核实）
+#  · 仅 Windows runner：本项目是 Windows 桌面程序（依赖 PySide6 / win32 API）
+#  · 首次运行较慢：运行时依赖含 PySide6 / opencv 等大件
+#  · 未纳入 CI 的事项：打包（体积大、耗时长）、verify_all 在线回归（需外网与 cookies）、
+#    pip-audit 的在线漏洞库（如需可加，但会让 CI 依赖网络）
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:      # 允许手动触发
+
+jobs:
+  checks:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装运行时依赖
+        run: python -m pip install -r kiana_vnext_plus/requirements.txt
+
+      - name: 安装开发依赖
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: ① 版本四件套一致性
+        shell: python
+        run: |
+          import json, pathlib, re, sys
+          root = pathlib.Path(".")
+          v_json = json.loads((root / "VERSION.json").read_text(encoding="utf-8"))["latest"]
+          pyproj = re.search(r'^version\s*=\s*"([^"]+)"',
+                             (root / "pyproject.toml").read_text(encoding="utf-8"), re.M).group(1)
+          init = re.search(r'__version__\s*=\s*"([^"]+)"',
+                           (root / "kiana_vnext_plus" / "__init__.py").read_text(encoding="utf-8")).group(1)
+          nsi = re.search(r'!define APP_VERSION\s*"([^"]+)"',
+                          (root / "kiana_setup.nsi").read_text(encoding="utf-8")).group(1)
+          vers = {"VERSION.json": v_json, "pyproject.toml": pyproj,
+                  "__init__.py": init, "kiana_setup.nsi": nsi}
+          print("版本四件套:", vers)
+          if len(set(vers.values())) != 1:
+              sys.exit(f"❌ 版本号不一致: {vers}")
+          print(f"✅ 版本一致: {v_json}")
+
+      - name: ② 静态检查（基线锁死 ruff≤84 / mypy≤104）
+        run: |
+          python -m ruff check kiana_vnext_plus --output-format=concise
+          python -m mypy kiana_vnext_plus --ignore-missing-imports
+
+      - name: ③ 全量测试（离线）
+        run: python -m pytest tests -q -p no:warnings
+
+      - name: ④ 行级覆盖率（仅报告，不设阈值）
+        run: python -m pytest tests -q -p no:warnings --cov=kiana_vnext_plus --cov-report=term

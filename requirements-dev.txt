@@ -1,0 +1,33 @@
+# Kiana Vnext Plus — 开发/测试依赖（v2.19.3）
+#
+# 用途：**测试与静态检查**所需的工具链。运行时依赖见 kiana_vnext_plus/requirements.txt。
+# 背景：此前 pytest / ruff / mypy / pyinstaller 都不在清单里 → 换机后无法从清单复现测试线
+#       （外部评估报告曾指出）。本文件补齐。
+#
+# 安装（在已装运行时依赖的基础上）：
+#     pip install -r kiana_vnext_plus/requirements.txt
+#     pip install -r requirements-dev.txt
+#
+# 用法：
+#     python -m pytest tests -q                      # 全量测试（离线，无需网络）
+#     python -m pytest tests --cov=kiana_vnext_plus   # 带行级覆盖率（基线 52%，见 docs/DEVLOG.md）
+#     python -m ruff check kiana_vnext_plus           # 静态检查（基线锁死 ≤84，见 tools/release_check.py）
+#     python -m mypy kiana_vnext_plus --ignore-missing-imports
+#     python tools/release_check.py --skip-network    # 发版门禁（10 项）
+#
+# ⚠️ 版本说明：以下为 v2.19.2 发版时**实测通过**的版本（门禁静态基线 ruff≤84/mypy≤104
+#    即在该组合下测得）。升级这些工具后需重跑 release_check 并按需调整锁死基线。
+
+# ── 测试 ──
+pytest==9.1.1
+pytest-cov==7.1.0          # 行级覆盖率（v2.19.2 起接入；仅报告不设阈值）
+
+# ── 静态检查 ──
+ruff==0.16.5
+mypy==2.3.1
+
+# ── 打包 ──
+pyinstaller==6.21.0        # 与「一键构建.bat」/ docs/BUILD.md 保持一致，勿随意升级
+
+# ── 依赖审计（发版门禁第 5 项）──
+pip-audit==2.10.1

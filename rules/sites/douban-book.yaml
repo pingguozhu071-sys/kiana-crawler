@@ -1,0 +1,18 @@
+# 豆瓣图书详情页（v2.17 1-1 实测取证——2026-08-30 curl 抓取
+# https://book.douban.com/subject/38483071 验证：h1 书名 / div#info 出版信息 /
+# div.intro 内容简介 / span.rating_num 评分 / div.rating_info 评分人数
+# 书影音通用（subject 详情页同构）；列表/小组页通用抽取兜底）
+name: douban-book
+match: [douban.com]
+exclude: [/group/, /people/, /photos/, /doubanapp, /accounts/]
+item_type: book
+
+detail:
+  fields:
+    title: {sel: "h1", text: true}
+    info: {sel: "div#info", text: true}
+    intro: {sel: "div.intro", text: true}
+    rating: {sel: "span.rating_num", text: true, transform: float}
+
+media:
+  images: {sel: "div#mainpic img", attr: src}

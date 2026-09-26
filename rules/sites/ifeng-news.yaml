@@ -1,0 +1,14 @@
+# 凤凰网（v2.16.1 规则层落地）
+name: ifeng-news
+match: [ifeng.com]
+item_type: article
+
+# [v2.17 打磨轮] 实测对齐（2026-08-30 news.ifeng.com/c/8w0rpeH6wWv）：
+# 正文容器为 CSS-module 哈希类 index_text_*——用前缀属性选择器（改版需重验）
+detail:
+  fields:
+    title: {sel: "h1", text: true}
+    content: {sel: "div[class*='index_text_'], div.article, div.flt_text, div.article-content", text: true}
+
+media:
+  images: {sel: "div[class*='index_text_'] img, div.article img", attr: src}

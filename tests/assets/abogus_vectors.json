@@ -1,0 +1,39 @@
+[
+ {
+  "params": {
+   "aweme_id": "7345492945006595379"
+  },
+  "method": "GET",
+  "t0": 1712345678900,
+  "t1": 1712345678912,
+  "r1": 123.0,
+  "r2": 456.0,
+  "r3": 789.0,
+  "sig": "Q78hQmwDDDgkhfWk5VKLfY3q6U8VYmQn0SVkMD2flPDOWL39HMTD9exo/sTvKPWjLT/AIeEjy4hbT3ohrQ2y0Hwf9W0L/25ksDSkKl5Q5xSSs1X9eghgJ04qmkt5SMx2RvB-rOXmqhZHKRbp09oHmhK4b1dzFgf3qJLzyf=="
+ },
+ {
+  "params": {
+   "aweme_id": "x",
+   "aid": "6383"
+  },
+  "method": "POST",
+  "t0": 1712345678900,
+  "t1": 1712345678912,
+  "r1": 1.0,
+  "r2": 2.0,
+  "r3": 3.0,
+  "sig": "Df8hQD8DDDDpDf6D5VKLfY3q66HHYmQn0SVkMD2fgufOWL39HMTD9exo/sTvKPWjLT/AIeEjy4hbT3ohrQ2y0Hwf9W0L/25ksDSkKl5Q5xSSs1X9eghgJ04qmkt5SMx2RvB-rOXmqhZHKRbp09oHmhK4b1dzFgf3qJLzuE=="
+ },
+ {
+  "params": {
+   "q": "测试"
+  },
+  "method": "GET",
+  "t0": 1700000000000,
+  "t1": 1700000000004,
+  "r1": 0.5,
+  "r2": 1.5,
+  "r3": 2.5,
+  "sig": "DfmhQDgkDDDpDD6D56KLfY3q6lmVYmQI0SVkMD2fQaDOqL39HMYg9exoIBGvXY8jwG/-IeEjy4hbT3ohrQ2y0Hwf9W0L/25ksDSkKl5Q5xSSs1X9eghgJ04qmkt5SMx2RvB-rOXmqhZHKRbp09oHmhK4b1dzFgf3qJLz7f=="
+ }
+]

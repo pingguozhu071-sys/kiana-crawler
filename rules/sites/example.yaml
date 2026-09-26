@@ -1,0 +1,15 @@
+# Kiana 站点规则示例（复制改名后编辑，保存即生效）
+name: example
+match: [example.com]
+item_type: article
+
+detail:
+  fields:
+    title: {sel: "h1", text: true}
+    content: {sel: "article, .content, #content", text: true}
+
+media:
+  images: {sel: "img", attr: src}
+
+pagination:
+  next: {sel: "a.next", attr: href}

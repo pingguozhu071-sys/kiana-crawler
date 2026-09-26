@@ -1,0 +1,18 @@
+# 网易新闻（v2.16.1 规则层落地；v2.17 5.3 实测对齐——2026-08-30 抓取
+# https://www.163.com/dy/article/L5G6JBP90514CFC7.html 验证：
+# h1.post_title / div.post_info（"发布时间　来源: xx"）/ div.post_body；
+# 选择器不中时走通用提取兜底，零副作用）
+name: netease-news
+match: [163.com, 163.com.cn]
+# [v2.17 0-2] 音视频/歌单等子域与路径排除（防与 yt-dlp 视频通道抢 URL）
+exclude: [music.163.com, y.music.163.com, /song, /mv/, /artist, /playlist, /album, /discover, /dj/, /program]
+item_type: article
+
+detail:
+  fields:
+    title: {sel: "h1.post_title, h1", text: true}
+    published: {sel: "div.post_info", text: true}
+    content: {sel: "div.post_body, div#content, div.post_text", text: true}
+
+media:
+  images: {sel: "div.post_body img, div#content img", attr: src}

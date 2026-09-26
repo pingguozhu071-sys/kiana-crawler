@@ -1,0 +1,14 @@
+# 搜狐新闻（v2.16.1 规则层落地；[v2.17 0-2] 视频子域排除——防与 yt-dlp 通道抢 URL）
+name: sohu-news
+match: [sohu.com]
+exclude: [tv.sohu.com, v.sohu.com, my.tv.sohu.com]
+item_type: article
+
+detail:
+  fields:
+    title: {sel: "h1.post_title, h1", text: true}
+    # [v2.17 打磨轮] 实测对齐（2026-08-30 www.sohu.com/a/1069629596_116237）：div.text 正文
+    content: {sel: "div.text, div.article, div.article-content, article", text: true}
+
+media:
+  images: {sel: "div.article img, article img", attr: src}

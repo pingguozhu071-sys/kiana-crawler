@@ -1,0 +1,28 @@
+[project]
+name = "kiana-vnext-plus"
+version = "2.19.8"
+description = "Kiana Vnext Plus - 全能数据采集引擎"
+requires-python = ">=3.11"
+
+# ── [v2.15 阶段1] 工程卫生：ruff/mypy 首次落地（温和基线——先让工具可用可跑，
+#    不追求零告警；后续按基线逐步收紧）──
+[tool.ruff]
+line-length = 160
+target-version = "py311"
+exclude = ["dist", "build", ".venv", "tools", ".zcode"]
+
+[tool.ruff.lint]
+# E=pycodestyle errors, F=pyflakes, W=warnings —— 只开核心三组，先看真实问题面
+select = ["E", "F", "W"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = false
+# 起步只查已注解函数（注解覆盖 ~35%，全量严格模式留待注解普及后开）
+disallow_untyped_defs = false
+exclude = ["dist", "build", ".venv", "tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,5 @@
+{
+    "latest": "2.19.8",
+    "released": "2026-09-18",
+    "notes": "v2.19.8 接线与自纠版：① 修 `--page-timeout 0` 关不掉看门狗（声明与行为不符：argparse 默认 0 使'未指定'与'显式 0'不可区分，且 crawl() 的引擎键表与 GUI 翻译表都缺这个键 → 恒用默认 300s）；现参数默认改 None、显式值无条件透传、两处键表接上，DEFAULT_GLOBAL 仍是唯一默认源。② 三个未接线 resolver（小红书/快手/网易云）接入下载链：改为表驱动 `_PLATFORM_RESOLVERS` + `resolve_direct_url()`（to_thread、失败保持原 URL、绝不抛），替换写死的抖音块并同时接入 audio 通道；顺手补上旧版漏掉的安全复检——解析出的直链来自远端页面状态，替换后必须过 SSRF 闸（否则等于绕过入口校验把内网地址交给 yt-dlp）。③ 门禁两处自纠：静态检查项原'清零反而判 FAIL'（只认正则、抓不到 All checks passed!）→ 改以退出码为准；`--skip-network` 原为死参数（声称跳过 pip-audit 却照旧联网）→ 真正生效。④ 工具链：installer_matrix 默认包名改自动探测最新安装包。⑤ ⚠️ 实测事故与修复：该工具的 `--dry` 此前只解析不判断，传了仍真装真卸 → 实测把机主正式安装的桌面/开始菜单快捷方式起始位置改成了临时目录（已全部核实并修复：注册表与已装版本完好，两处快捷方式已复原）；根因之二是卸载器恢复分支的 CreateShortCut 用错了 $OUTDIR（NSIS 语义），已显式 SetOutPath 修正。⑥ 文档同步：CHANGELOG 补 2.19.0–2.19.7 共 7 个缺失条目；README/ARCHITECTURE/BUILD 版本与 PO Token 路径、卸载器描述、onefile 误标逐处修正；三个过期脚本加标注；启动爬虫.bat 去硬编码。新增 36 项回归测试。"
+}

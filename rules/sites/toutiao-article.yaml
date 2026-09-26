@@ -1,0 +1,16 @@
+# 今日头条文章页（v2.17 1-1 实测取证——2026-08-30 IAB 真实渲染
+# https://www.toutiao.com/article/7679740574882087424/ 验证：
+# h1 标题 / article.syl-article-base（正文）/ div.article-content（标题+时间+正文混合，
+# 用作元信息兜底）。详情页静态可抽；列表/搜索页反爬重——不做）
+name: toutiao-article
+match: [toutiao.com]
+exclude: [/search, /hot, /user/, /group/]
+item_type: article
+
+detail:
+  fields:
+    title: {sel: "h1", text: true}
+    content: {sel: "article.syl-article-base, article, div.article-content", text: true}
+
+media:
+  images: {sel: "article.syl-article-base img, article img", attr: src}
