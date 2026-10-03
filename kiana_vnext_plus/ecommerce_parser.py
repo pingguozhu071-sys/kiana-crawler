@@ -30,15 +30,36 @@ PLATFORM_MARKERS = {
 
 
 def detect_platform(url: str) -> Optional[str]:
-    """按 URL 域名识别电商平台"""
+    """按 URL 域名识别电商平台。
+
+    [v6 修复] 原实现是 `any(m in host for m in markers)` 且**按字典顺序取第一个命中**，
+    有两个真缺陷（均已实测复现）：
+
+    ① **顺序覆盖**：`xianyu` 的标记 `2.taobao.com` **永远命中不了**——`taobao` 先被检查，
+       而 `"taobao.com"` 是 `"2.taobao.com"` 的子串。于是
+       `https://2.taobao.com/item.htm` → `'taobao'`（应为 `'xianyu'`），
+       **闲鱼商品会被用淘宝的解析逻辑处理**。
+
+    ② **子串匹配 = 域名后缀伪造**：标记是**域名**，却按子串比——
+       `nottaobao.com`、`fake-jd.com`、`taobao.com.evil.com` 全被判成对应平台。
+
+    现改为：**按域名边界匹配**（`host == m` 或 `host.endswith("." + m)`）
+    + **最长标记优先**（不再依赖字典顺序；将来加 `item.jd.com` 这类更具体的标记也不会被覆盖）。
+    """
     try:
-        host = urlparse(url).netloc.lower()
+        host = (urlparse(url).hostname or "").lower()
     except Exception:
         return None
+    if not host:
+        return None
+    best: Optional[str] = None
+    best_len = 0
     for plat, markers in PLATFORM_MARKERS.items():
-        if any(m in host for m in markers):
-            return plat
-    return None
+        for m in markers:
+            m = m.lower()
+            if (host == m or host.endswith("." + m)) and len(m) > best_len:
+                best, best_len = plat, len(m)
+    return best
 
 
 def _json_from_script(html: str, var_name: str) -> Optional[dict]:

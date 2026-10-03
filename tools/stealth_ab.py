@@ -65,7 +65,11 @@ async def _main(urls, runs, wait):
     from kiana_vnext_plus.config import GlobalConfig
     from kiana_vnext_plus.solver_engine import SolverEngine
     from omegaconf import OmegaConf
-    gcfg = GlobalConfig(OmegaConf.create({"log_level": "INFO"}))
+    # [v6] 这行**不是死代码**：`GlobalConfig.__init__` 有副作用——首跑会生成/加载
+    # `master.key.bin`（DPAPI 保护的授权密钥，见 config.py:338）。变量本身没人用，
+    # 故去掉赋值以消除 ruff F841，同时保留调用。
+    # ⚠️ 别把这类"未使用的构造"当垃圾删掉——自动修 F401/F841 的工具会这么干。
+    GlobalConfig(OmegaConf.create({"log_level": "INFO"}))
     solver = SolverEngine(pool_size=1, max_pages_per_context=3,
                           memory_limit_mb=4096, headless=True)
     await solver.init()

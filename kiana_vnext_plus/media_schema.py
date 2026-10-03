@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """统一媒体输出 schema media_schema.py（v2.17 3.1）
 
-设计目标：把各平台异构产物归一为同构条目（平台 → 统一字段表），使落盘 / 入队 / 审计
-只认一种结构（本工程独立设计，是结构化媒体条目的唯一入口）。
+设计参考 02-spiders data2tasks（统一 9 字段协议）与 03 hybrid 归一化（平台→同构键表）
+——只学结构设计，实现为本工程重写（结构化媒体条目落盘/入队/审计的唯一入口）。
 
 各平台 resolver 的 dict 输出（douyin/xhs/kuaishou/music163 + 未来平台）经
 from_resolver 收敛为 MediaItem；旧 resolve() 返回 dict 保留兼容层

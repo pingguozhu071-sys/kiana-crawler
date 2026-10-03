@@ -2,7 +2,7 @@
 """[v2.19.7 安全·扫描发现] 残余裸请求点收口 + 刻意豁免项的边界测试。
 
 覆盖：parse_sitemap / discover_sitemap / proxy_fetcher.fetch_source / media_downloader._download
-豁免：llm_client（作者自填端点，含本地推理服务——加闸会拦死正当用法）
+豁免：llm_client（机主自填端点，含本地推理服务——加闸会拦死正当用法）
 """
 import ast
 import pathlib

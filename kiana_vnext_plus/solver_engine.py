@@ -8,7 +8,7 @@
 - 每个上下文绑定独立指纹（基于代理 IP 确定性生成），并应用到
   locale / timezone / user_agent / color_scheme
 - 使用 injection_scripts.build_stealth_scripts 注入 16 维隐身脚本
-- 集成 source_level_stealth 源码级反检测（CDP 延迟、协议层指纹）
+- 集成 source_level_stealth 源码级反检测（CDP 延迟、rebrowser-patches、协议层指纹）
 - 上下文健康度追踪（成功/失败/无响应计数），无响应自动替换
 - 浏览器崩溃自动重启、池耗尽紧急创建
 - 周期性内存监控，超限触发上下文回收或完整重启
@@ -28,16 +28,16 @@ _os.environ.setdefault("PYTHONUTF8", "1")
 _os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 _os.environ.setdefault("PATCHRIGHT_SILENCE_MAJOR_ERRORS", "1")
 
-# ── 隐身相关环境变量必须在导入浏览器库之前设置 ──
+# ── rebrowser-patches 环境变量必须在导入 playwright/patchright 之前设置 ──
 from .source_level_stealth import (
-    configure_stealth_env,
+    configure_rebrowser_env,
     build_stealth_launch_args,
     build_stealth_context_options,
     CDPDeferralManager,
     apply_cdp_fingerprint,
     stealth_navigate,
 )
-configure_stealth_env(
+configure_rebrowser_env(
     runtime_fix_mode="addBinding",
     source_url="app.js",
     utility_world_name="util",
@@ -68,6 +68,42 @@ try:
     HAS_PLAYWRIGHT = True
 except ImportError:
     HAS_PLAYWRIGHT = False
+
+# ══════════════════════════════════════════════════════════════════════
+# [v6 修复] 注入通道自证：**patchright 优先，但必须先实测它真的能注入**
+# ──────────────────────────────────────────────────────────────────────
+# 真机根因（2026-10-01 实测：patchright 1.61.2，其内置 driver 自称 playwright-core 1.61.1）：
+#   patchright 是 playwright 的"隐身补丁版"，它改写了 **Chromium 页面会话初始化**里
+#   init script 的注册路径。比对两个 driver bundle：上游 playwright-core 是
+#       for (const initScript of page.allInitScripts())
+#         _evaluateOnNewDocument(initScript, "main", true /* runImmediately */);
+#   而 patchright 换成了「按 context.initScripts / page.initScripts 各循环一次」的写法，
+#   **丢掉了 runImmediately**。后果是 `context.add_init_script` / `page.add_init_script`
+#   在 Chromium 上**全程静默失效**：不抛异常、CDP 命令确实下发了、浏览器也回了
+#   identifier，但脚本永不运行（Chromium 内部为何因此不执行，未再下钻——不影响结论）。
+#   实测 marker 探针：patchright 在第 1 次导航 / 第 2 次导航 / reload 后都读到 0；
+#   同一份脚本换 playwright 立刻是 1/1/1。任何 launch 组合（默认 / channel=chromium /
+#   channel=chrome / persistent context / 带不带 stealth 启动参数）都一样失效。
+#   ⇒ 生产路径优先 patchright（见 `_launch_browser`），而验证路径用的 playwright，
+#     所以"链修好了"在生产里**一行都没跑** —— 真机表现就是自证 5 次
+#     「隐身链自证疑点（plugins=0）」。
+#
+# 对策：启动浏览器前用探针**实测注入通道**，探不通就回退 playwright（探针结论进程内缓存）。
+#   探针只判"通道通不通"，**不判任何指纹值** —— 有头浏览器本来就报 5 个 plugin，与通道
+#   无关，所以不会把"原生正常值"误判成故障，也不会覆盖原生值。
+#   探针固定 headless=True：注入通道是**驱动层**行为、与渲染模式无关，而本机有真人使用，
+#   一律不弹窗；有头模式下的通道可用性由 `_prewarm_page` 的**逐上下文自证**兜住。
+_INJECT_PROBE_MARK = "__KIANA_INJECT_CHANNEL_OK__"
+_INJECT_PROBE_SCRIPT = ("(() => { window." + _INJECT_PROBE_MARK + " = (window."
+                        + _INJECT_PROBE_MARK + " || 0) + 1; })();")
+# 进程内缓存：patchright 注入通道的三态结论 (True/False/None, 可读原因)。
+# 浏览器实例昂贵，同一进程只探一次。
+_PATCHRIGHT_CHANNEL_CACHE: Optional[Tuple[Optional[bool], str]] = None
+# [v2.19.9] 「自证通过」的**稳定标记** —— 正面证据只认这个常量，不认日志措辞。
+# 教训（真实踩过，commit e794712）：首次成功的日志从 DEBUG 改成 INFO、句子也重写了，
+# 而断言写的是那句**旧文案** ⇒ 判据默默失效；红出来的样子像"反检测回归"，其实引擎
+# 一行没坏。所以：措辞可以改，这个常量不许改；断言方 import 它，不许手抄这句话。
+STEALTH_SELFCHECK_OK_MARK = "隐身链自证通过"
 
 # 可选 psutil（用于浏览器进程内存监控）
 try:
@@ -156,6 +192,65 @@ class _ContextEntry:
         return False
 
 
+def probe_cdp_endpoint(port: int, timeout: float = 1.5):
+    """探测本机 CDP 调试端口是否可用 → `(ok, 可读说明)`。
+
+    [v6 M1-d] 用途：让"接管已登录浏览器"在**起任务之前**就能给出可读结论，
+    而不是等接管失败后静默回退成无登录态抓取（用户完全看不出来）。
+
+    **只连 127.0.0.1**（主机名写死，不接用户输入）→ 无 SSRF 面；
+    路径固定 `/json/version`，是 Chrome DevTools 的标准发现端点。
+
+    本函数**不抛异常**：任何失败都转成 `(False, 可读原因)`，调用方直接展示。
+    """
+    import json as _json
+    import urllib.request as _ur
+    _port = int(port)
+    try:
+        with _ur.urlopen(f"http://127.0.0.1:{_port}/json/version", timeout=timeout) as r:
+            data = _json.loads(r.read().decode("utf-8", "ignore"))
+        _browser = str(data.get("Browser", "")).strip() or "未知浏览器"
+        return True, f"已连接 CDP :{_port}（{_browser}）"
+    except Exception as e:
+        return False, (f"CDP 端口 {_port} 不可用（{e!r}）——请先用 "
+                       f"--remote-debugging-port={_port} 启动已登录的 Chrome，再开启本项")
+
+
+async def _probe_init_script_channel(factory, args, headless: bool = True) -> Tuple[Optional[bool], str]:
+    """[v6 修复] 实测 `add_init_script` 是否**真的会在页面里执行**。
+
+    返回三态，**证据级别不同、处置也不同**（不能把"没测出来"当成"测出来是坏的"）：
+      - `True`  = 实测可用（marker 出现了）；
+      - `False` = **实测不可用**：CDP 命令已下发、浏览器也回了 identifier，但脚本从未执行
+                  （真机 patchright 就是这一态）→ 调用方应回退到 playwright；
+      - `None`  = 无法判定（探针自身失败：起不了浏览器、超时、工厂不可用……）→ 调用方
+                  保持原行为，但必须把原因写进日志（有头/无头、指纹值都不参与判定）。
+
+    只判通道、不判指纹值：本函数不看 plugins/webdriver 的数值，只看自证 marker，
+    所以与有头/无头、原生 plugins 数量无关，**绝不会覆盖有头浏览器的原生值**。
+
+    本函数**不抛异常**：任何失败都转成可读结论，由调用方决定处置。
+    """
+    try:
+        async with factory() as pw:
+            browser = await pw.chromium.launch(args=args, headless=headless, timeout=60000)
+            try:
+                ctx = await browser.new_context()
+                await ctx.add_init_script(_INJECT_PROBE_SCRIPT)
+                page = await ctx.new_page()
+                page.set_default_timeout(30000)
+                await page.goto("about:blank", wait_until="domcontentloaded", timeout=30000)
+                got = await page.evaluate(f"() => window.{_INJECT_PROBE_MARK} || 0")
+                await ctx.close()
+                if int(got or 0) > 0:
+                    return True, "add_init_script 已实测执行"
+                return False, "add_init_script 已下发但脚本从未执行（整条隐身链不会生效）"
+            finally:
+                await browser.close()
+    except Exception as e:
+        return None, f"注入通道探针无法判定：{e!r}"
+
+
 class SolverEngine:
     """单例浏览器求解引擎
 
@@ -200,9 +295,23 @@ class SolverEngine:
         self.cdp_attach = bool(cdp_attach)
         self.cdp_port = int(cdp_port)
         self._cdp_attached = False
+        # [v6 M1-d] 接管失败的**可观测**状态：原实现只写一条 warning 就静默回退到
+        # 自管浏览器——用户以为在用自己的登录态，其实没有。GUI 据此给可读提示。
+        self.cdp_attach_failures = 0
+        self.cdp_fallback_reason = ""
 
         self.playwright = None
         self.browser = None
+        # [v6 修复] 实际启用的浏览器引擎 + "注入通道自证"结论（GUI/日志/测试可读）。
+        # 原实现只按"装了 patchright 就用 patchright"选引擎，而 patchright 的
+        # add_init_script 在 Chromium 上静默失效 → 整条隐身链一行不跑（真机根因）。
+        self.injection_engine = "未启动"
+        self.patchright_channel_ok = True
+        self.patchright_channel_reason = ""
+        # [v2.19.9] 逐上下文自证的**正面结论**（至少有一个上下文自证通过）。
+        # 存在的意义：让"注入真的生效了"这件事**可被断言** ——
+        # 否则只能靠"日志里没出现告警"倒推，而那正是 R1 静默失效五次的成因。
+        self.stealth_selfcheck_ok = False
         self._contexts: asyncio.Queue = asyncio.Queue()
         self._in_use: dict = {}  # ctx -> _ContextEntry（使用中的上下文）
         self._ready = asyncio.Event()
@@ -246,34 +355,100 @@ class SolverEngine:
             logger.info(f"求解引擎初始化完成，池大小={self._contexts.qsize()}")
 
     async def _launch_browser(self):
-        """启动浏览器实例（patchright 优先，回退 playwright）
+        """启动浏览器实例（patchright 优先，**但注入通道实测通过才用**，否则回退 playwright）
 
         使用 source_level_stealth.build_stealth_launch_args 构建优化启动参数，
         移除所有自动化暴露标志，添加 2026 年最新验证的隐身参数。
+
+        [v6 修复] 原实现只判"装没装 patchright"，而 patchright 的 `add_init_script` 在
+        Chromium 上**静默失效** → 生产路径整条 55 维隐身链一行都不执行（真机自证
+        5 次「隐身链自证疑点（plugins=0）」），而验证路径用 playwright 所以看着是好的。
+        现改为：**先实测注入通道，探不通就换 playwright**（结论进程内缓存，只探一次）。
         """
         args = build_stealth_launch_args(headless=self.headless)
-        # [v2.17 3.5] CDP 接管既有浏览器（实验默认关）：连用户已开调试端口的 Chrome
+        # [v2.17 3.5] CDP 接管既有浏览器（连用户已开调试端口的 Chrome，登录态/指纹现成；
+        # 接管后浏览器生命周期归用户，close 不销毁）
+        # [v6 M1-d] 接管失败**不再静默回退**：原实现只写一条 warning 就换成自管浏览器，
+        # 用户以为在用登录态、实际没有——表现为"登录后才可见的内容取不到"，极难定位。
+        # 现改为 ERROR + 计数 + 保留可读原因，GUI 侧据此提示。
         if self.cdp_attach:
             try:
                 _engine = (pr_async() if HAS_PATCHRIGHT else pw_async())
+                self.injection_engine = "patchright(CDP接管)" if HAS_PATCHRIGHT else "playwright(CDP接管)"
                 self.playwright = await _engine.start()
                 self.browser = await self.playwright.chromium.connect_over_cdp(
                     f"http://127.0.0.1:{self.cdp_port}/")
                 self._cdp_attached = True
-                logger.info(f"已接管用户在开浏览器(CDP :{self.cdp_port})——实验模式，浏览器生命周期归用户")
+                self.cdp_fallback_reason = ""
+                logger.info(f"已接管用户在开浏览器(CDP :{self.cdp_port})——浏览器生命周期归用户")
                 return
             except Exception as e:
-                logger.warning(f"CDP 接管失败（回退自管浏览器）: {e}")
+                self.cdp_attach_failures += 1
+                self.cdp_fallback_reason = f"CDP :{self.cdp_port} 接管失败：{e!r}"
                 self._cdp_attached = False
+                logger.error(
+                    f"{self.cdp_fallback_reason} —— 已回退为**自管浏览器**，本次任务"
+                    f"**不带你的登录态**（登录后才可见的内容会取不到）。请确认 Chrome 以 "
+                    f"--remote-debugging-port={self.cdp_port} 启动、且该端口未被占用。",
+                    exc_info=True)
         # 显式传递 headless 参数，避免与 args 中的 headless 标志冲突
+        factory = None
         if HAS_PATCHRIGHT:
-            self.playwright = await pr_async().start()
-            self.browser = await self.playwright.chromium.launch(args=args, headless=self.headless)
+            verdict, reason = await self._patchright_channel_ok(args)
+            # 三态处置：只有**实测不可用（False）**才回退；"无法判定（None）"保持原行为。
+            self.patchright_channel_ok = verdict is not False
+            self.patchright_channel_reason = reason
+            if verdict is not False:
+                if verdict is None:
+                    logger.warning(
+                        f"[v6 修复] patchright 注入通道**无法判定**（{reason}）——按原行为继续"
+                        f"用 patchright；每个上下文仍会做注入自证，若实测不通会打 ERROR "
+                        f"说明整条链没跑（不拿『没测出来』当『测出来是坏的』）。")
+                factory, name = pr_async, "patchright"
+            elif HAS_PLAYWRIGHT:
+                # [v6 修复] 关键回退：patchright 装了但**实测注入不了** —— 绝不"照旧用它"
+                logger.error(
+                    f"[v6 修复] 注入通道自证不通过：原生产路径优先 patchright，但实测其 "
+                    f"add_init_script **静默失效**（{reason}）→ 整条 55 维隐身链一行都不会执行"
+                    f"（真机表现：「隐身链自证疑点（plugins=0）」）。已自动改用 playwright "
+                    f"启动浏览器（同一份链在 playwright 上实测生效）。根治办法是升级/"
+                    f"更换 patchright 版本，或保持本回退。")
+                factory, name = pw_async, "playwright"
+            else:
+                logger.error(
+                    f"[v6 修复] 实测 patchright 的 add_init_script 不执行（{reason}），"
+                    f"但本机没有 playwright 可回退 —— 仍用 patchright：**本次运行"
+                    f"整条隐身链都不会生效**，请安装 playwright 或升级 patchright。")
+                factory, name = pr_async, "patchright"
         elif HAS_PLAYWRIGHT:
-            self.playwright = await pw_async().start()
-            self.browser = await self.playwright.chromium.launch(args=args, headless=self.headless)
+            factory, name = pw_async, "playwright"
         else:
             raise RuntimeError("无可用浏览器引擎（请安装 patchright 或 playwright）")
+        self.injection_engine = name
+        self.playwright = await factory().start()
+        self.browser = await self.playwright.chromium.launch(args=args, headless=self.headless)
+
+    async def _patchright_channel_ok(self, args) -> Tuple[Optional[bool], str]:
+        """[v6 修复] patchright 的注入通道是否可用（三态结论进程内缓存，只探测一次）
+
+        只有**实测结论（True/False）**才写进缓存：`None`（探针自身失败：起不来、超时、
+        工厂不可用）**不缓存**——否则一次瞬时故障会把整个进程钉在"无法判定"上，还会
+        污染同进程内后续的引擎选择（如 CDP 接管失败后回退的那条路径）。
+        """
+        global _PATCHRIGHT_CHANNEL_CACHE
+        if _PATCHRIGHT_CHANNEL_CACHE is None:
+            _verdict, _reason = await _probe_init_script_channel(pr_async, args)
+            if _verdict is True:
+                _label = "通过"
+            elif _verdict is False:
+                _label = "不通过"
+            else:
+                _label = "无法判定"
+            logger.info(f"[v6 修复] patchright 注入通道自证：{_label} —— {_reason}")
+            if _verdict is not None:
+                _PATCHRIGHT_CHANNEL_CACHE = (_verdict, _reason)
+            return _verdict, _reason
+        return _PATCHRIGHT_CHANNEL_CACHE
 
     async def _create_solver_context(self, proxy_url: Optional[str] = None):
         """创建单个浏览器上下文并预热
@@ -317,6 +492,12 @@ class SolverEngine:
         context = None
         try:
             context = await self.browser.new_context(**context_kwargs)
+            # [v6 修复] 先打**注入通道自证 marker**（独立一条 init script）：
+            # 它与隐身链互不影响，预热审计据此区分两种完全不同的故障：
+            #   marker 没出现 = 通道断了（引擎的 add_init_script 根本没执行 → 整条链白写）；
+            #   marker 有、plugins 仍 0 = 通道通、链内容有问题。
+            # 原实现只有后者可诊断，前者（真机根因）会伪装成"某个维度没兜住"。
+            await context.add_init_script(_INJECT_PROBE_SCRIPT)
             # 注入完整 55 维隐身脚本链（基于 config 开关控制维度）
             stealth_scripts = self._build_full_evasion_chain(fingerprint)
             await context.add_init_script(stealth_scripts)
@@ -360,6 +541,10 @@ class SolverEngine:
         [FIXED & MODIFIED] v2.10.5 P1-5 隐身链自证：原只 evaluate userAgent（装完零验证）。
         现审计 navigator.webdriver / canvas 噪声 / WebGL / 时区 / languages 是否注入生效；
         任一指标暴露自动化信号 → logger 警告（不弃用——避免重建循环，仅供排障）。
+
+        [v6 修复] 再加一条**更根本**的自证：注入通道 marker（见 `_create_solver_context`）。
+        "整条链一行都没执行"与"某个维度没兜住"是两类完全不同的故障，原审计只能用
+        plugins=0 间接表达，而**有头浏览器原生就报 5 个 plugin**，通道断了也看不出来。
         """
         try:
             await page.goto("about:blank", wait_until="domcontentloaded", timeout=10000)
@@ -376,15 +561,51 @@ class SolverEngine:
                     ua_len: navigator.userAgent.length,
                 };
             }""")
+            # [v6 修复] 注入通道自证：marker 由 `_create_solver_context` 随隐身链一起注入。
+            # 它没出现 = 本引擎的 `add_init_script` 根本没执行 → 整条 55 维链一行都没跑。
+            # 这一条与浏览器原生 plugins 数量无关，所以**有头模式同样有效**
+            #（有头本来就报 5 个 plugin，光看 plugins 是发现不了通道断掉的）。
+            _channel_mark = await page.evaluate(
+                f"() => window.{_INJECT_PROBE_MARK} || 0")
+            if not _channel_mark:
+                logger.error(
+                    f"[v6 修复] 注入通道自证失败：marker 未出现 —— 本上下文"
+                    f"（引擎={self.injection_engine}）的 `add_init_script` 脚本**一行都没执行**，"
+                    f"55 维隐身链（plugins/mimeTypes/webdriver/canvas 全在内）在本上下文里"
+                    f"完全失效。通道探针结论：{self.patchright_channel_reason or '未记录'}")
             _flags = []
             if audit.get("webdriver") in (True, "true", "True"):
                 _flags.append(f"webdriver={audit.get('webdriver')}")
-            if audit.get("plugins_len", -1) <= 0:
+            if audit.get("plugins_len", -1) <= 0 and _channel_mark:
+                # 通道断了的情况上面已经单独报 ERROR，这里不重复刷同一条告警
                 _flags.append(f"plugins={audit.get('plugins_len')}")
             if _flags:
-                logger.warning(f"隐身链自证疑点（{','.join(_flags)}）——后续若被风控可追溯该上下文")
-            else:
-                logger.debug(f"隐身链自证通过: webdriver={audit.get('webdriver')} plugins={audit.get('plugins_len')}")
+                logger.warning(f"隐身链自证疑点（{','.join(_flags)}）——引擎={self.injection_engine}，"
+                               f"后续若被风控可追溯该上下文")
+            elif _channel_mark:
+                # [v6 修复·机主明确要求「反爬要看得见的日志、输出用中文」]
+                # 原来是 `logger.debug` —— **INFO 级别下完全看不见**，
+                # 于是"跑通了"和"压根没跑"在日志里长得一模一样。
+                # 机主那份 22 页日志里反检测字样 0 次，根因就在这。
+                #
+                # 但这段是**每个上下文**都跑的（上下文会轮换），全打 INFO 会刷屏
+                # ⇒ **首次 INFO（把话说清楚），后续 DEBUG**。
+                if not getattr(self, "_stealth_ok_logged", False):
+                    self._stealth_ok_logged = True
+                    logger.info(
+                        "✅ %s：55 维隐身链**实测跑起来了**"
+                        "（webdriver=%s、plugins=%s、引擎=%s）——"
+                        "这条是**自证**结果，不是「以为配好了」",
+                        STEALTH_SELFCHECK_OK_MARK,
+                        audit.get("webdriver"), audit.get("plugins_len"),
+                        self.injection_engine)
+                else:
+                    logger.debug("%s: webdriver=%s plugins=%s 引擎=%s",
+                                 STEALTH_SELFCHECK_OK_MARK,
+                                 audit.get("webdriver"), audit.get("plugins_len"),
+                                 self.injection_engine)
+                # [v2.19.9] 正面证据落到**状态**上（不靠日志文案）：测试/调用方可直接断言。
+                self.stealth_selfcheck_ok = True
         except Exception as e:
             logger.debug(f"预热页面未完全就绪（可继续）: {e}")
 
@@ -761,6 +982,15 @@ class SolverEngine:
                     await page.wait_for_timeout(int(extra_wait * 1000))
                 html = await page.content()
                 headers = dict(response.headers) if response else {}
+                # [v6 修复·R6] 把**浏览器实际落点**带回去。
+                # 渲染兜底若是从短链种子进来的，页面里的相对链接会被按**短链主机**解析
+                # （`b23.tv/video/BVxxx` —— b23.tv 是短链服务，下面根本没有 /video/ 路径），
+                # 于是拼出一堆不存在的 URL，还会被当成视频任务去下载，存下 46 字节的错误页。
+                # 用 `page.url`（导航后的真实地址）当基址即可根治。
+                try:
+                    headers["_final_url"] = page.url
+                except Exception:
+                    pass  # 拿不到落点只是解析基址退回请求 url，不影响抓取成败
                 return html, status, headers
             finally:
                 try:
@@ -1036,8 +1266,13 @@ class SolverEngine:
             await cdp_mgr.detach()
         except Exception:
             pass
+        # [v6 修复·R6] 同 render_simple：把浏览器实际落点带回去当解析基址，
+        # 否则短链种子的相对链接会拼成 `b23.tv/video/BV...` 这种不存在的地址。
+        try:
+            headers_dict["_final_url"] = page.url
+        except Exception:
+            pass  # 同上：落点缺失只降级解析基址，不阻断
         return html, status, headers_dict
-
     # ════════════════════════════════════════════════════════════════
     # 内存监控
     # ════════════════════════════════════════════════════════════════

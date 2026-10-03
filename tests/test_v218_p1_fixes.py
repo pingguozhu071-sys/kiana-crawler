@@ -1,4 +1,4 @@
-"""v2.18 P1 批量修复回归（P1-1/3/4/9/10/11）
+"""v2.18 P1 批量修复回归（bug_audit P1-1/3/4/9/10/11）
 
 - P1-1  LLM 链接打分分片并发 + 总预算超时（原串行 64 条 ≈ 35 分钟启动阻塞）
 - P1-3  租约心跳续期 lease_expires（CAS 在 leased_at，不破坏 mark_done_checked）
@@ -102,18 +102,32 @@ class TestLeaseHeartbeat(unittest.TestCase):
 
 class TestCsvBom(unittest.TestCase):
     def test_append_flush_keeps_single_bom(self):
-        """同秒两次 flush 追加同一 CSV：BOM 只在文件头（原 utf-8-sig 中部再插 BOM）"""
+        """flush 追加 CSV：BOM 只在文件头（原 utf-8-sig 会在中部再插 BOM）
+
+        **本用例此前是 flaky 的**：它断言"同秒两次 flush 落到同一个文件"（`len(csvs) == 1`），
+        而文件名带**秒级时间戳** —— 两次 flush 一旦**跨过秒边界**就会生成两个文件，
+        断言随即失败。实测：单独跑过、**全量跑挂**（`test_append_flush_keeps_single_bom`
+        在 1019 passed 里挂了 1 条），属于典型的**时间依赖 flake**。
+
+        **真正要验的性质**是"每个产出的 CSV 里 BOM 只出现在文件头"——
+        与"落成一个还是两个文件"无关。改为逐文件断言后，用例变确定性的，
+        且**验的还是同一件事**；顺带把"同秒合并"这个实现细节单独记一笔。
+        """
         with tempfile.TemporaryDirectory() as td:
             exp = DataExporter(Path(td))
             exp.buffer["a.com"] = [{"url": "https://a/1", "title": "t1"}]
             exp._flush_domain("a.com")
             exp.buffer["a.com"] = [{"url": "https://a/2", "title": "t2"}]
-            exp._flush_domain("a.com")  # 同秒 → 同名文件追加
+            exp._flush_domain("a.com")  # 同秒 → 追加到同名文件；跨秒 → 另建一个文件
             csvs = list(Path(td).rglob("*.csv"))
-            self.assertEqual(len(csvs), 1)
-            raw = csvs[0].read_bytes()
-            self.assertEqual(raw.count(b"\xef\xbb\xbf"), 1, "BOM 必须只出现一次（文件头）")
-            self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
+            self.assertTrue(csvs, "两次 flush 至少要产出一个 CSV")
+            self.assertLessEqual(len(csvs), 2, "同名文件最多一个 + 跨秒时的新文件")
+            for c in csvs:
+                raw = c.read_bytes()
+                self.assertEqual(raw.count(b"\xef\xbb\xbf"), 1,
+                                 f"{c.name}: BOM 必须只出现一次（文件头）")
+                self.assertTrue(raw.startswith(b"\xef\xbb\xbf"),
+                                f"{c.name}: 文件必须以 BOM 开头")
 
 
 class TestParserCanonical(unittest.TestCase):

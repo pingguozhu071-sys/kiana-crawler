@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """网易云音乐 weapi 解析器 music163_resolver.py（v2.16.1 阶段3）
 
-weapi 加密链属公开协议事实（多份公开资料一致、不含可主张版权的表达）——
-本实现按协议规范独立重写：
+算法参考 02-spiders 候选工程 extractor/music163/encrypt.py（声明"copy 自
+CharlesPikachu/Music-Downloader"，来源/许可不清晰——按公开算法重写实现）：
   weapi = JSON → AES-CBC(key=固定 nonce 0CoJUm6Qyw8W8jud, iv=0102030405060708)
           → base64 → AES-CBC(key=随机 16 字符) → base64 得 params；
   secKey 逆序 + 教科书 RSA（e=010001, 固定 modulus）→ hex(256 位) 得 encSecKey。

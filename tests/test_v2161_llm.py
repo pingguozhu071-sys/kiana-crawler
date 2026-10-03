@@ -148,9 +148,17 @@ class TestGuiSwitchSource:
         assert "_save_llm_settings" in src
 
     def test_engine_bridge_forwards_keys(self):
+        """[v2.19.9] 字面量变了，但**判据一个字没变**：翻译表仍必须把 LLM 开关与 Key
+        透传给引擎（否则又是本工程反复吃过的"GUI 能填、能存、不生效"）。
+
+        原断言 `'"llm_key": str(cfg.get("llm_key", ""))'` 要求**明文键就在这个 cfg 字典里**。
+        自 v2.19.9 起 Key 走 DPAPI 密文（`secrets/llm_key.bin`，与打码密钥同一套机制），
+        所以改成断言 `load_llm_key(cfg)` —— 谁把它删了，这条照样红。
+        """
         src = (Path(__file__).parent.parent / "launcher_v8.py").read_text(encoding="utf-8")
         assert '"llm_enabled": bool(cfg.get("llm_enabled", False))' in src
-        assert '"llm_key": str(cfg.get("llm_key", ""))' in src
+        assert '"llm_key": load_llm_key(cfg)' in src, \
+            "EngineBridge 翻译表没把 LLM Key 透传给引擎（GUI 能填不生效）"
 
     def test_v8_no_longer_pops_llm_keys(self):
         src = (Path(__file__).parent.parent / "launcher_v8.py").read_text(encoding="utf-8")

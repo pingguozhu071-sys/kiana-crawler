@@ -17,6 +17,24 @@ import glob
 import json
 from pathlib import Path
 
+# ─────────────────────────────────────────────────────────────
+# [v2.19.9 修复·这个 bug 让「隐私扫描」**从来没成功过**] 中文 Windows 下
+# `sys.stdout` 的编码是 GBK(cp936)，而本脚本的状态行里带 ⚠️/✓/✅ 这些符号 ——
+# GBK 编不出来，于是 `print` 直接抛 `UnicodeEncodeError`（实测复现：
+# "gbk codec can't encode character '\u26a0'"）。
+# 更要命的是它**只在 stdout 不是终端时才炸**：GUI 那条路正是
+# `subprocess.run(..., capture_output=True)`（管道）→ 子进程必崩 →
+# 界面永远显示"隐私扫描失败"。所以在脚本内部自己把流改成 UTF-8，
+# 并留 `errors="replace"` 作第二道保险。
+# ⚠️ 配套改动：调用方（`launcher_v9._run_priv_scan`）必须**用 utf-8 解码**这个子进程
+# 的输出，否则这边写 UTF-8、那边按 cp936 解，反而变成乱码。
+# ─────────────────────────────────────────────────────────────
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 PROJ = Path(__file__).resolve().parent.parent
 
 

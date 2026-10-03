@@ -5,13 +5,18 @@
 session_pool.py 的 SessionPool = 「旧请求会话池」（protocol_engine 请求 cookie/头合并）。
 两者同名不同物——检索/排错时以 import 来源区分。
 
-设计语义（通用做法：“出口 + cookie + 指纹捆绑为虚拟用户、被封锁则整包退役”，
-本工程独立重写）：
+参考 Crawlee SessionPool（Apache-2.0 可行，仅学"出口+cookie+指纹捆绑为虚拟用户、
+被封锁整包退役"的语义，实现为本工程重写）：
   - IdentitySession：proxy_url + cookie_bundle + fingerprint_hint 三者捆绑；
   - SessionPool：按 domain 摊派会话；会话被封锁（mark_bad）→ 连续 2 次整包退役换新
     （新代理 + 新 cookie 组 + 新指纹）。
-本模块当前仅逻辑层（可单测）；接线到 crawler/exit_manager/cookie_armory 为下一轮
-（改主链路属行为变更，须独立验收后接入）。
+接线状态：**已接入主链路**（v6 据实修正——此前此处写"本模块当前仅逻辑层，
+接线为下一轮"，而实际早已在用，属**过期陈述**，会误导排查）：
+  - `crawler` 建池并挂 `protocol.identity_pool_provider`；
+  - `protocol_engine._build_headers` 按 URL 域注入 Cookie；
+  - `page_processor` 回传封锁（`mark_bad`）。
+**如实标注未接线项**：`fingerprint_hint` 目前只生成、**全仓暂无消费者**——
+不要把它当成"指纹已接线"。
 """
 import dataclasses
 import hashlib
@@ -71,26 +76,20 @@ def load_cookie_groups(paths) -> list:
     [ {"<域名>": "k=v; k2=v2", ...}, ... ]。文件缺失/空 → 跳过；全空 → 空列表。
     与 cookie_health 同域逻辑一致（域前缀匹配），值为拼好的 Cookie 头串。"""
     import pathlib
+    from .cookie_utils import parse_netscape_cookies
     groups = []
     for fp in (paths or []) if not isinstance(paths, str) else [paths]:
         p = pathlib.Path(str(fp))
         if not p.exists():
             continue
         try:
+            text = p.read_text(encoding="utf-8-sig", errors="ignore")
             per_domain: dict = {}
-            for line in p.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    continue
-                parts = s.split("\t")
-                if len(parts) < 7:
-                    continue
-                dom = (parts[0] or "").lower()
+            for c in parse_netscape_cookies(text):
+                dom = str(c["domain"] or "").lower()
                 if not dom:
                     continue
-                name, value = parts[5], parts[6]
-                kvs = per_domain.setdefault(dom, [])
-                kvs.append(f"{name}={value}")
+                per_domain.setdefault(dom, []).append(f"{c['name']}={c['value']}")
             bundled = {d: "; ".join(kvs) for d, kvs in per_domain.items()}
             if bundled:
                 groups.append(bundled)

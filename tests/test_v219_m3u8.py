@@ -132,6 +132,141 @@ class TestPlaylistParsingRegression(unittest.TestCase):
         self.assertIsNone(key, "私网密钥必须被拒绝")
 
 
+    def test_master_playlist_picks_variant_when_bandwidth_is_first_attr(self):
+        """**行为**：master 里 `BANDWIDTH=` 是**第一个属性**时必须能选出变体
+
+        真机形态就是 `#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=...`。
+        原实现用 `line.split(',')[1:]`，**没先切掉标签前缀** ⇒ 第一个属性（也就是
+        BANDWIDTH）被整体丢掉 ⇒ bw 恒 0 ⇒ 选不出任何变体 ⇒ 直接返回 ""
+        （整条 master 播放列表兜底从来下不动）。
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        master = ("#EXTM3U\n"
+                  "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\nlow/index.m3u8\n"
+                  "#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080\nhigh/index.m3u8\n")
+        seen = []
+
+        async def _fake_fetch_text(url, headers, *a, **kw):
+            seen.append(url)
+            return "#EXTM3U\n#EXTINF:5.0,\nseg.ts\n"
+
+        dl = _dl()
+        with patch.object(dl, "_fetch_text", _fake_fetch_text):
+            got = asyncio.new_event_loop().run_until_complete(
+                dl._select_best_stream(master, {}, "https://cdn.example.com/a/master.m3u8"))
+
+        self.assertTrue(seen, "一个变体都没被请求 ⇒ master 兜底仍然是死的")
+        self.assertIn("high/index.m3u8", seen[0], f"选的不是最高带宽那个：{seen}")
+        self.assertTrue(got, "应返回变体播放列表正文")
+
+    def test_key_unavailable_refuses_to_merge_ciphertext(self):
+        """**行为**：声明 AES-128 却取不到密钥时**必须拒绝合并**（不许产出密文 .mp4）
+
+        原来 `if key:` 没有 else ⇒ 取不到密钥照样 `_merge_segments` + `return True`
+        ⇒ 产物是 AES 密文拼接块，而调用方判据（>1MB / 后缀 / 头非 HTML）**密文全过**
+        ⇒ 记 completed。这是本工程最忌的假成功。
+        """
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        media = ("#EXTM3U\n"
+                 '#EXT-X-KEY:METHOD=AES-128,URI="https://cdn.example.com/key.bin"\n'
+                 "#EXTINF:5.0,\nseg0.ts\n")
+        calls = {"key": 0, "merge": 0}
+
+        async def _fake_fetch_text(url, headers, *a, **kw):
+            return media
+
+        async def _fake_fetch_bytes(url, headers, *a, **kw):
+            calls["key"] += 1
+            return b""          # 403/超时/异常都会被 `_fetch_bytes` 吞成这个
+
+        async def _fake_seg(semaphore, url, dest, headers):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"\x00" * 64)
+            return True
+
+        async def _fake_merge(temp_dir, output_path):
+            calls["merge"] += 1
+            Path(output_path).write_bytes(b"merged")
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+            out = Path(td) / "out.mp4"
+            dl = _dl()
+            # `_dl()` 是**裸实例**（`__new__`，故意不初始化 session）⇒ 这里补上
+            # `_download_once` 唯一需要的那一个字段（段并发度）
+            dl.concurrency = 2
+            with patch.object(dl, "_fetch_text", _fake_fetch_text), \
+                    patch.object(dl, "_fetch_bytes", _fake_fetch_bytes), \
+                    patch.object(dl, "_download_segment", _fake_seg), \
+                    patch.object(dl, "_merge_segments", _fake_merge):
+                ok = asyncio.new_event_loop().run_until_complete(
+                    dl._download_once("https://cdn.example.com/a/play.m3u8", {}, out))
+
+            # 非空断言：证明**真的走到了取密钥那一步**（否则本用例会"因为别的原因"绿）
+            self.assertTrue(calls["key"], "没走到取密钥那一步（用例失效：可能没装 pycryptodome）")
+            self.assertFalse(ok, "取不到密钥却返回了成功")
+            self.assertEqual(calls["merge"], 0, "取不到密钥却仍然合并了密文")
+            self.assertFalse(out.exists(), "产出了放不了的密文 .mp4")
+
+
+    def test_merge_is_zero_transcode_unless_copy_fails(self):
+        """**行为**：合并**主路径必须是 `-c copy`**（零转码红线）；重编码只在拷贝失败后才跑
+
+        原来是反的：先跑 GPU **重编码**（`-c:v …nvenc -b:v 5M`），只有它失败才退回
+        `-c copy` ⇒ 正常路径**静默把画质压到 5 Mbps**。而 `concat` 合并本来不需要编码
+        —— `-c copy` 是流拷贝（I/O 级），重编码反而更慢。
+        """
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        def _scenario(copy_rc):
+            cmds = []
+
+            class _P:
+                def __init__(self, rc):
+                    self.returncode = rc
+
+                async def communicate(self):
+                    return b"", b"boom"
+
+            async def _fake_exec(*argv, **kw):
+                cmds.append([str(a) for a in argv])
+                return _P(copy_rc if len(cmds) == 1 else 0)
+
+            async def _flow(tmp, out):
+                dl = _dl()
+                dl.gpu_acceleration = True
+                with patch("kiana_vnext_plus.m3u8_downloader.asyncio.create_subprocess_exec",
+                           _fake_exec), \
+                        patch.object(dl, "_detect_gpu_encoder_cached",
+                                     lambda: {"name": "nv", "hwaccel": "cuda",
+                                              "codec": "h264_nvenc"}):
+                    await dl._merge_segments(tmp, out)
+
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+                tmp = Path(td) / "segs"
+                tmp.mkdir()
+                (tmp / "00000.ts").write_bytes(b"\x00" * 8)
+                asyncio.new_event_loop().run_until_complete(_flow(tmp, Path(td) / "o.mp4"))
+            return cmds
+
+        ok_cmds = _scenario(0)
+        self.assertEqual(len(ok_cmds), 1, f"主路径成功就不该再跑第二条 ffmpeg：{ok_cmds}")
+        self.assertIn("copy", ok_cmds[0], f"主路径不是流拷贝（零转码红线）：{ok_cmds[0]}")
+
+        fb_cmds = _scenario(1)
+        self.assertGreaterEqual(len(fb_cmds), 2, f"拷贝失败后应有重编码兜底：{fb_cmds}")
+        self.assertIn("copy", fb_cmds[0], f"第一条仍必须是流拷贝：{fb_cmds[0]}")
+        self.assertIn("h264_nvenc", fb_cmds[1], f"兜底没走重编码：{fb_cmds[1]}")
+
+
 def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 

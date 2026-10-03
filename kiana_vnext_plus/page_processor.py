@@ -1,5 +1,6 @@
 """页面处理器：抓取、解析、去重、链接发现、防御评估"""
 
+from typing import Optional
 import re
 import time
 import asyncio
@@ -10,28 +11,21 @@ from .sanitizer import sanitize_text, sanitize_headers, sanitize_record
 from .parser import compute_content_hash, extract_metadata_async, simhash_64, simhash_hamming
 from .json_util import json_dumps
 from .url_utils import url_hash as _uh
+# [v6 修复·R6] 短链误解析检测（`b23.tv/video/BVxxx` 这类必然不存在的地址）
+from .url_utils import is_shortener_misresolution
+# [本轮修复] 媒体流分片判定（**唯一实现**在 url_utils）——B站 DASH 轨道分片
+# 不是页面、也不是可独立交付的媒体文件，绝不能当成下载任务入队。
+from .url_utils import is_media_stream_url
 
 logger = logging.getLogger(__name__)
 
-# [FIXED & MODIFIED] 静态资源后缀 + 媒体 CDN 域名（链接入队过滤）
-_STATIC_EXTS = {
-    ".js", ".mjs", ".css", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif",
-    ".svg", ".ico", ".bmp", ".woff", ".woff2", ".ttf", ".eot", ".otf",
-    ".mp4", ".m4s", ".mp3", ".flv", ".webm", ".ogg", ".wav", ".aac",
-    ".json", ".map", ".pdf", ".zip", ".gz", ".7z", ".rar", ".xml", ".txt",
-    ".wasm", ".dat",
-}
-_MEDIA_CDN_DOMAINS = {
-    "bilivideo.com", "hdslb.com", "akamaized.net", "cloudfront.net",
-    "cdninstagram.com", "fbcdn.net", "ytimg.com", "googlevideo.com",
-}
-
-
-def sanitize_video_filename(url: str) -> str:
-    """从 URL 生成安全的视频文件名（修复：原来直接取 URL 后 20 字符可能包含非法字符）"""
-    # 提取 URL 中有意义的部分作为文件名
-    safe = re.sub(r'[^\w\-.]', '_', url)[-60:]
-    return safe if safe else "video_unknown"
+# ⚠️ 此处原有 `_STATIC_EXTS` / `_MEDIA_CDN_DOMAINS` 两个常量（v2.10 起）。
+# 它们**与 `link_scoring.py` 里的同名常量逐字相同**，而且**全仓零引用**：
+# `_is_static_link` 早已委托 `link_scoring._filter_static`（v2.17 B3 的扩展点改造），
+# 于是这两份成了**死拷贝**。死拷贝不是"无害的冗余"——它正是本工程连续九轮栽的那个
+# 坑的**种子**：下一个人想改"哪些后缀算静态资源"时，自然会改离 `_is_static_link`
+# 最近的那一份（也就是这两份），改完发现"没生效"，或者更糟——只改了其中一份。
+# 现直接删除，静态资源判定的**唯一实现**收敛到 `link_scoring._filter_static`。
 
 
 def _placeholder_trigger(data, url, html) -> bool:
@@ -110,6 +104,16 @@ class PageProcessor:
                         _m = re.search(r'player\.bilibili\.com/player\.html\?[^"\'<>\s]*bvid=(BV\w+)', vurl)
                         if _m:
                             vurl = f"https://www.bilibili.com/video/{_m.group(1)}"
+                        # [本轮修复] 页面里的 `<video src>` / `<source src>` / `og:video`
+                        # 常常指向**媒体流的一条轨道分片**（`.m4s` 之类）——那不是"一个视频"，
+                        # 而是"某个视频的一小片"：签名短时效、单独一片放不出东西。
+                        # 入队 = 每个都白跑一轮 yt-dlp + 必然 403 + 刷屏。
+                        # 判据是**唯一实现** `url_utils.is_media_stream_url`（基于形态，不是域名黑名单）。
+                        # **放行**：`.mp4`/`.m3u8`/`.ts`/无后缀 —— "给一个直链就直接下"是
+                        # 本工程明确支持的能力（`crawler._seed` 媒体直链分支、`m3u8_downloader`）。
+                        if is_media_stream_url(vurl):
+                            self._log(f"媒体流分片不入下载队列（不是可独立下载的媒体）: {vurl[:60]}", "warn")
+                            continue
                         await self.frontier.add_video_download(vurl, domain)
                     except Exception:
                         pass
@@ -129,22 +133,69 @@ class PageProcessor:
             try:
                 if 'built files will be auto injected' in url:
                     self._log(f"B站 JS 假链接已过滤: {url[:60]}", "warn")
+                elif is_shortener_misresolution(url):
+                    # [v6 修复·R6] 短链主机 + 站点路径 = **必然不存在**的 URL。
+                    # 真机后果：它会被当成视频任务交给 yt-dlp，下回 **46 字节的错误页**
+                    # （`*.unknown_video`），日志里刷十几次、落一堆垃圾文件。
+                    self._log(f"短链误解析已过滤（该 URL 不存在）: {url[:70]}", "warn")
                 else:
                     await self.frontier.add_video_download(url, domain)
                     self._log(f"B站视频入队: {url[:60]}")
             except Exception as e:
                 logger.debug(f"B站 video enqueue: {e}")
+            # ══════════════════════════════════════════════════════════════════
+            # [本轮修复·真机日志 2026-10-03] **不再把解析出的 DASH 轨道分片逐条塞进下载队列。**
+            #
+            # 改前的行为（这就是日志里那些 CDN URL 的来源）：
+            #     streams = await resolve_bilibili_video(info['bvid'], info['cid'])
+            #     for s in streams:                      # ← 8+ 条视频轨（多种编码/清晰度）
+            #         await self.frontier.add_video_download(s['url'], domain)
+            # `resolve_bilibili_video` 返回的是 `dash.video[].baseUrl` —— **B站 CDN 的
+            # 单轨分片地址**（`upos-sz-mirrorcoso1.bilivideo.com/upgcxcode/.../xxx.m4s`
+            # 与 `xy61x164x142x12xy.mcdn.bilivideo.cn:8082/v1/resource/upgcxcode/...`）。
+            #
+            # **为什么这条路上必然 403（不是"偶尔失败"）**：
+            #   ① 这些 URL 是**时间签名**的一次性地址（`deadline=` 参数），
+            #      而下载 worker 是 5 秒轮询 + 并发排队后才去取的；
+            #   ② yt-dlp 走的是 **generic extractor**，而工程给它的 `http_headers`
+            #      只设了 UA、**没有主站 Referer** —— B站 CDN 校验 Referer，
+            #      没有它一律 403（工程自己的注释早就写明这个规律）。
+            # 于是每一条都变成 `yt-dlp 未产出文件 → [generic] HTTP 403 → 直连兜底 →
+            # Video download failed` 的一套完整空转。
+            #
+            # **为什么可以直接不下载**（不是"放弃能力"）：
+            #   同一个视频的**页面 URL 在上面几行就已经入队了**（`add_video_download(url, …)`），
+            #   而 yt-dlp 自带 B站 extractor：它会自己调 playurl、自己挑轨、自己带
+            #   Referer/cookies/登录态 —— 也就是**把这件事做对的那一份实现已经在了**。
+            #   逐条入队不但多余，还会把同一个视频按轨道数**重复下载 N 遍**。
+            #
+            # 保留 `resolve_bilibili_video` 调用：它同时给出 `support_formats`
+            # （账号实际能拿到的清晰度清单），那正是 cookies 静默降级时最需要的判据
+            # （见 `universal_downloader.verify_bilibili_login` 的说明）—— 只记清单，不发 URL。
+            # ══════════════════════════════════════════════════════════════════
             try:
                 from .video_resolver import extract_bilibili_info, resolve_bilibili_video
                 info = extract_bilibili_info(html_sanitized, url)
                 if info['bvid'] and info['cid']:
                     streams = await resolve_bilibili_video(info['bvid'], info['cid'])
+                    # 逐条过判据（不是只看第一条）：拦下的与放行的都留日志，
+                    # 免得日后"为什么这个视频没下"只能靠猜。
+                    _dropped = 0
                     for s in streams:
                         _su = s.get('url') or ''
-                        if (_su.startswith('http') and 'player.html' not in _su
-                                and s.get('type') == 'video'):
-                            await self.frontier.add_video_download(_su, domain)
-                            self._log(f"B站视频流: {s.get('desc','')} {s.get('quality','')}")
+                        if not _su.startswith('http') or s.get('type') != 'video':
+                            continue                      # 非视频轨（audio/flv）与格式清单：本来就不入队
+                        if is_media_stream_url(_su):
+                            _dropped += 1                 # DASH 轨道分片：见上方说明，必然 403
+                            continue
+                        await self.frontier.add_video_download(_su, domain)
+                        self._log(f"B站视频流直链入队: {s.get('desc', '')} {s.get('quality', '')}")
+                    if _dropped:
+                        _quals = [str(s.get('desc') or s.get('quality') or '')
+                                  for s in streams if not s.get('url')]
+                        _q = "、".join(x for x in _quals[:6] if x) or "未知"
+                        self._log(f"B站轨道清单（拦下 {_dropped} 条分片不入队——页面 URL 已入队，"
+                                  f"yt-dlp 自行挑轨）: 可选清晰度 {_q}")
             except Exception as e:
                 logger.debug(f"B站 resolver: {e}")
 
@@ -181,11 +232,16 @@ class PageProcessor:
         # [v2.17 0-5b] 占位渲染已前置于质量闸（process_job 先调 _maybe_render_placeholder）
         return data, html_sanitized
 
-    async def _maybe_render_placeholder(self, data: dict, html_sanitized, url: str) -> tuple:
+    async def _maybe_render_placeholder(self, data: dict, html_sanitized, url: str,
+                                        final_url: Optional[str] = None) -> tuple:
         """[v2.17 0-5b] 占位页渲染兜底（预算共享 browser_render_max）：从
         _enqueue_and_render 前移——原位置在质量闸之后，真·空壳页（无 title 无 text）
         在闸前即被拒收，永远等不到渲染兜底；正文偏短但有线索的页也被闸拦。
-        渲染成功 → (新 data, 新 html)；失败/无浏览器/无预算 → 原样返回。"""
+        渲染成功 → (新 data, 新 html)；失败/无浏览器/无预算 → 原样返回。
+
+        [实测 v2.19.8 短链 bug] `final_url` 传进渲染后的**第二次解析**：渲染拿到的
+        就是短链 302 之后的真实页面，若仍按短链主机解析，等于把刚修好的出链又拼回
+        那个不存在的地址（机主日志里"渲染兜底"与 19 页失败同时出现正是这条路径）。"""
         _rk = getattr(self, '_render_success_count', 0)
         _rb = _render_budget_cfg(getattr(self.crawler, 'cfg', None))
         if not (_placeholder_trigger(data, url, html_sanitized)
@@ -201,12 +257,22 @@ class PageProcessor:
         self._log(f"静态解析为空/占位页 → 通用浏览器渲染兜底（JS 渲染站点: {url[:45]}）")
         _rendered_ok = False
         try:
+            # [v6 修复·R6] 原来这里把 solver 返回的 headers 用 `_` **丢掉**了，
+            # 于是下面解析仍以**短链 url** 为基址 → 页面里的相对链接被拼成
+            # `b23.tv/video/BVxxx`（b23.tv 是短链服务，没有 /video/ 路径）→
+            # 真机实测：这些垃圾 URL 还会被当成视频任务下载，存下 **46 字节的错误页**。
+            # 现在接住 headers，取浏览器**实际落点**当解析基址。
             if ('tieba.baidu.com' in url or 'zhihu.com' in url) and hasattr(solver, 'render_simple'):
-                html2, st2, _ = await solver.render_simple(url, extra_wait=3.0)
+                html2, st2, _hdrs2 = await solver.render_simple(url, extra_wait=3.0)
             else:
-                html2, st2, _ = await solver.solve(url, challenge_wait=25, extra_wait=3.0)
+                html2, st2, _hdrs2 = await solver.solve(url, challenge_wait=25, extra_wait=3.0)
             if st2 < 400 and html2:
-                data2 = self.parser.extract_metadata(html2, url)
+                # [v6 修复·R6 根因 C 收敛] 这里原来**自己读了一遍 `_final_url`**：
+                #     _rendered_at = str((_hdrs2 or {}).get("_final_url") or "")
+                # "落点可能藏在哪"于是有了**两份实现** —— 下一次修 bug 必然漏一处。
+                # 统一改调 `_final_url_of`（全工程唯一知道落点在哪的地方）。
+                _rendered_at = self._final_url_of(headers=_hdrs2) or final_url
+                data2 = self.parser.extract_metadata(html2, url, _rendered_at or final_url)
                 if data2.get("title") or data2.get("text"):
                     data = data2
                     data['rendered'] = True
@@ -220,11 +286,17 @@ class PageProcessor:
             self._render_success_count = max(0, getattr(self, '_render_success_count', 1) - 1)
         return data, html_sanitized
 
-    async def _discover_links(self, data: dict, url: str, html_sanitized, job: dict, uh: str):
-        """[v2.17 B2-S3] 链接发现段（静态资源过滤/SSRF 闸/robots 合规/血缘 push——纯搬移）。"""
+    async def _discover_links(self, data: dict, url: str, html_sanitized, job: dict, uh: str,
+                             final_url: Optional[str] = None):
+        """[v2.17 B2-S3] 链接发现段（静态资源过滤/SSRF 闸/robots 合规/血缘 push——纯搬移）。
+
+        [实测 v2.19.8 短链 bug] `final_url` 是 `_extract_links` 解析 `data` 里相对
+        链接的基址：data["links"] 已由 parser 用终到地址拼成绝对 URL，若这里退回
+        短链主机，**同一份数据会被拼出两套主机**（fallback 分支专属的串味）。
+        """
         if job.get('depth', 0) < self.project.config.limits.max_depth:
-            links = self._extract_links(data, url, html_sanitized)
-            llm_priorities = {}
+            links = self._extract_links(data, final_url or url, html_sanitized)
+            llm_priorities: dict = {}
             # 关键词白名单：不匹配的链接不入队（内容过滤设置，GUI 传入）
             kf = (getattr(self.crawler, '_crawl_filters', None) or {})
             kf_kw = kf.get('keywords', []) if isinstance(kf, dict) else []
@@ -289,11 +361,68 @@ class PageProcessor:
                 pass
         return data
 
-    async def _parse_page(self, html: str, url: str, job: dict, uh: str) -> dict:
+    @staticmethod
+    def _final_url_of(response=None, cached=None, headers=None) -> str:
+        """从本轮响应（或缓存条目）取"请求实际落到的地址"，取不到返回 `""`。
+
+        **这是全工程唯一知道"落点可能藏在哪"的地方** —— 别处要判基址一律调它，
+        不许自己再读一遍 headers（那正是 R6 会同时坏在好几条路上的原因）。
+
+        [实测 v2.19.8 短链 bug] 主抓取通道（`protocol_engine.fetch` 的手动逐跳）
+        **早就**把终到地址放进了 `ResponseAdapter.url`，问题只在于没人读它——
+        页处理器一直用请求前的短链 `url` 去解析相对链接。
+
+        [v6 修复·R6 根因 A 纵深] 又加了两处来源，并把 `headers` 收进来：
+          ① `headers["_final_url"]`：**浏览器求解层**（`solver_engine`）的落点。
+             Tier-4 返回的适配器现在也把它写进了 `resp.url`（`engine_router._try_solver`），
+             但渲染兜底那条路只拿得到 headers —— 两处都要认。
+          ② `resp.url` 之后才是 `_kiana_final_url`（`url_utils.safe_get` 的逐跳终点）。
+          ③ 缓存 meta 的 `final_url`：命中磁盘缓存时**没有响应对象**，
+             而缓存正文当初就是用终到地址解析的——不记住它，缓存重放会拼回短链主机。
+             （⚠️ 实测纠正：该字段**此前每次写盘都被丢弃**，
+              不只是"旧条目没有"—— 已在 `p1_enhancements.HttpCache.store` 修好。）
+
+        只认 http(s)：`url` 是身份、不是解析基址，取不到就老老实实退回请求 url
+        （与改前行为一致），**绝不猜**。
+        """
+        _heads = []
+        if headers:
+            _heads.append(headers)
+        _rsp_h = getattr(response, "headers", None)
+        if isinstance(_rsp_h, dict):
+            _heads.append(_rsp_h)
+        # ① 求解层/渲染兜底带回来的落点（最可靠：浏览器说了算）
+        for _h in _heads:
+            try:
+                _u = _h.get("_final_url") or _h.get("final_url")
+            except Exception:
+                _u = None
+            if _u and str(_u).startswith(("http://", "https://")):
+                return str(_u)
+        # ② 适配器上的 url / 逐跳终点，③ 缓存 meta
+        for _src in (response, cached):
+            if not _src:
+                continue
+            _u = getattr(_src, "url", None)
+            if not _u:
+                _u = getattr(_src, "_kiana_final_url", None)
+            if not _u and isinstance(_src, dict):
+                _u = (_src.get("meta") or {}).get("final_url")
+            if _u and str(_u).startswith(("http://", "https://")):
+                return str(_u)
+        return ""
+
+    async def _parse_page(self, html: str, url: str, job: dict, uh: str,
+                          final_url: Optional[str] = None) -> dict:
         """[v2.17 B2-S1] 解析段（纯代码搬移，行为不变）：metadata 提取 → 站点规则层
         （fields/images/list_items 并入；规则翻页 next_url 直接入队，语义原样）→
-        页面类型分类 → 文本脱敏 → 内容过滤。返回处理后的 data dict。"""
-        data = await extract_metadata_async(html, url)
+        页面类型分类 → 文本脱敏 → 内容过滤。返回处理后的 data dict。
+
+        [实测 v2.19.8 短链 bug] `final_url` = 本次请求**跟随重定向后的终到地址**，
+        作为相对链接（favicon/canonical/images/videos/出链）的解析基址；`url` 仍是
+        任务请求地址（落库/去重/站点规则/分类口径不变）。缺省 None → parser 退回 `url`。
+        """
+        data = await extract_metadata_async(html, url, final_url)
         # [v2.17 2-C] JSON-LD 实体扁平化（entities[]——检索/AI 消费面）
         try:
             from .parser import flatten_json_ld
@@ -304,7 +433,9 @@ class PageProcessor:
             pass
         try:
             from .site_rules import apply_rule
-            _rule_data = apply_rule(html, url)
+            # [v2.19.8 短链 bug] 规则层里的相对链接（item_link / 翻页 next_url）
+            # 同样按终到地址补全，否则短链种子下会把 `https://b23.tv/page/2` 入队
+            _rule_data = apply_rule(html, url, final_url)
             if _rule_data:
                 data['rule'] = _rule_data['name']
                 data['fields'] = {k: v for k, v in (_rule_data.get('fields') or {}).items() if v}
@@ -392,6 +523,53 @@ class PageProcessor:
         else:
             logger.info(msg)
 
+    async def _fetch_with_identity(self, url: str, domain: str, job: dict):
+        """抓取单个 URL，并在其前后做身份 acquire / report（[v6 M1-c]）。
+
+        身份来自 `CookieArmory`（按站账号：Fernet 加密 + 健康分 + 额度 + 冷却）。
+        **未配置 armory 时直接走原路径，行为零变化。**
+
+        三条硬约束（施工方案红线）：
+          ① 同步 SQLite 访问一律经 `asyncio.to_thread`——不冻事件循环；
+          ② 身份不可用时**诚实降级**：记可读日志后按无 cookie 抓取，
+             **绝不**静默假装有身份；
+          ③ 租约在 `finally` 清除，**绝不跨页残留**（残留 = 用错账号）。
+        """
+        armory = getattr(self, "cookie_armory", None)
+        if armory is None or not domain:
+            return await self.router.fetch(url, domain, job)
+
+        from .cookie_armory import Acquired, ReportResult
+        lease = await asyncio.to_thread(armory.acquire_identity, domain)
+        if not isinstance(lease, Acquired):
+            # 诚实降级：说清"为什么没身份"，别让登录墙表现成"页面内容不对"
+            logger.info(f"[身份] 域 {domain} 不可用（{lease.reason.value}）："
+                        f"{lease.detail} —— 本页按无 cookie 抓取")
+            return await self.router.fetch(url, domain, job)
+
+        proto = getattr(self.router, "protocol", None)
+        if proto is not None:
+            proto.install_cookie_lease(domain, lease.cookie)
+        try:
+            resp = await self.router.fetch(url, domain, job)
+        except Exception:
+            # 网络层异常 ≠ 身份坏了 → 报 NETWORK（armory 侧不扣分、不冷却，防误杀）
+            await asyncio.to_thread(armory.report, domain, lease.name, ReportResult.NETWORK)
+            raise
+        else:
+            status = getattr(resp, "status_code", 0)
+            if status in (403, 429, 503):
+                result = ReportResult.THROTTLED
+            elif status == 401:
+                result = ReportResult.LOGIN_EXPIRED
+            else:
+                result = ReportResult.OK
+            await asyncio.to_thread(armory.report, domain, lease.name, result)
+            return resp
+        finally:
+            if proto is not None:
+                proto.clear_cookie_lease(domain)
+
     async def process_job(self, job: dict):
         url = job['normalized_url']
         domain = job['domain']
@@ -416,17 +594,25 @@ class PageProcessor:
                     expected_country = getattr(_nav, 'country', None) or \
                         self._language_to_country(getattr(_nav, 'language', ''))
 
+            # [v6 修复·真机实测发现] 下面两处「达到页数上限」**不是失败**，
+            # 但原来记成 `_update_progress('failed')` → 进度条报 `fail=19`
+            # （实测把机主和排查者都吓到：日志里一条错误都没有，却显示 19 个失败）。
+            # 上限是**使用者自己配的**、任务是**主动跳过**的 —— 记成 `skipped`。
+            # ⚠️ frontier 那边**仍必须** `mark_failed(..., retry=False)`：
+            # 主循环的退出条件是「pending + retry == 0」，
+            # 不把这些任务从 pending 移走就会**反复取到 → 反复跳过 → 死循环**。
+            # 也就是：**移除动作是对的，标签是错的** —— 修在报告层。
             if await self.frontier.count_done_by_domain(domain) >= \
                     self.project.config.limits.max_pages_per_domain:
                 await self.frontier.mark_failed(uh, retry=False)
                 # [v2.18 P1-8] 记账补齐：上限跳过的任务原来凭空消失（零进度计数）
-                self._update_progress('failed')
+                self._update_progress('skipped')
                 return
 
             # [FIXED & MODIFIED] max_pages 总页数限制（原实现从未生效——done 已超上限即停止处理新任务）
             if await self.frontier.count_done_total() >= self.project.config.limits.max_pages:
                 await self.frontier.mark_failed(uh, retry=False)
-                self._update_progress('failed')
+                self._update_progress('skipped')
                 return
 
             # [v2.17 E-P2] 身份捆绑开启时出口/反馈走会话池（封锁整包退役）；关闭时零影响
@@ -481,9 +667,13 @@ class PageProcessor:
             await self._human_delay(domain=domain)
             # [v2.17 1-5] robots Crawl-delay 尊重（robots_respect 开启时按域最小请求间隔；
             # 假体/降级爬虫可能无该方法——getattr 守卫）
-            _pd = getattr(self.crawler, "_polite_delay", None)
-            if _pd:
-                await _pd(domain)
+            # [v6 修复] 原变量名 `_pd` 与本函数后面
+            # `from .link_scoring import priority_delta_from_data as _pd` **同名**
+            # —— mypy 会认为 `_pd` 可能是 None，报 "None not callable"。
+            # 两者毫不相干（一个是礼貌延迟、一个是优先级增量），改名消除遮蔽。
+            _polite = getattr(self.crawler, "_polite_delay", None)
+            if _polite:
+                await _polite(domain)
             # 限流引擎：全局+域名双档令牌桶（429 指数退避自动生效）
             rate_limiter = getattr(self.crawler, 'rate_limiter', None)
             if rate_limiter:
@@ -514,7 +704,7 @@ class PageProcessor:
                 response = None
                 logger.debug(f"[cache] hit: {url[:60]}")
             else:
-                response = await self.router.fetch(url, domain, job)
+                response = await self._fetch_with_identity(url, domain, job)
                 status = response.status_code
                 # [FIXED & MODIFIED] v2.15 阶段2 304 协商闭环：未变化 → 复用缓存内容，
                 # 跳过重复解析（内容没变，上次已提取过——增量语义）
@@ -526,7 +716,11 @@ class PageProcessor:
                     if http_cache:
                         _m = cached.get('meta', {})
                         http_cache.store(url, html, {"etag": _m.get('etag', ''),
-                                                     "last-modified": _m.get('last_modified', '')})
+                                                     "last-modified": _m.get('last_modified', ''),
+                                                     # [v2.19.8 短链 bug] 304 复用正文时终到地址
+                                                     # 只可能来自原条目——丢了它，重放就得按短链
+                                                     # 主机解析（原 meta 里存过就继续带着）
+                                                     "final_url": _m.get('final_url', '')})
                     await self.frontier.mark_done(uh, leased_at=job.get('leased_at'))
                     self._update_progress('done')
                     await self._finalize_done(uh, url, domain, status, time.monotonic() - t_start, proxy,
@@ -563,6 +757,10 @@ class PageProcessor:
                     except Exception:
                         pass
                 html = await response.text()
+            # [实测 v2.19.8 短链 bug] 本次请求**实际落到的地址**（短链 302 后的终点）。
+            # 命中磁盘缓存时没有响应对象 → 取缓存 meta 里当初记下的终到地址。
+            # 取不到就是 ""，下游一律退回请求 url（与改前行为一致）。
+            _final_url = self._final_url_of(response, cached)
             # 脱敏开关：关闭时保留手机号/邮箱/IP 等原始数据
             # [v2.19 P1] 全页正则走线程池（50 路并发 × 大页面时压在事件循环上会累积停顿；
             # 同函数 :318 早已 to_thread，此处原为直调——自身不一致）
@@ -575,8 +773,12 @@ class PageProcessor:
             # 渲染兜底不依赖原始 html（用 html_sanitized 判定 + 渲染时重新取页），前置安全。
             if http_cache and status == 200 and html_sanitized:
                 try:
-                    http_cache.store(url, html_sanitized,
-                                     response.headers if response is not None else {})
+                    _ch = dict(response.headers) if response is not None else {}
+                    # [v2.19.8 短链 bug] 正文与"解析它的基址"必须一起存：缓存命中时
+                    # 没有响应对象，只有 meta 能告诉下游这份正文该按哪个主机解析。
+                    if _final_url:
+                        _ch["final_url"] = _final_url
+                    http_cache.store(url, html_sanitized, _ch)
                 except Exception:
                     pass
             latency = time.monotonic() - t_start
@@ -624,16 +826,31 @@ class PageProcessor:
                     _ok2 = False
                     self._log(f"{_why} → 浏览器渲染兜底（JS 重站/防爬: {url[:45]}）")
                     try:
+                        # [v6 修复·R6 根因 C] 原来这里把 headers 用 `_` **丢掉了**：
+                        #     html2, st2, _ = await solver.render_simple(...)
+                        # 而浏览器渲染后的**真实落点**就在 `headers["_final_url"]` 里
+                        # （见 `solver_engine` 的 `render_simple` / `_do_solve`）。
+                        # 后果：**正文换成了渲染结果，基址却还是渲染前那个**
+                        # （短链主机，或缓存路径下的 `""`）⇒ 渲染拿到的好页面
+                        # 仍被按短链主机解析，`links.internal` 里几十条 `b23.tv/video`。
+                        # 现在接住落点，并**同步更新 `_final_url`** ——
+                        # 正文与基址必须成对，否则就是"同一份数据拼出两套主机"。
+                        _hdrs_r = {}
                         if ('tieba.baidu.com' in url or 'zhihu.com' in url) and hasattr(solver, 'render_simple'):
-                            html2, st2, _ = await solver.render_simple(url, extra_wait=3.0)
+                            html2, st2, _hdrs_r = await solver.render_simple(url, extra_wait=3.0)
                         else:
-                            html2, st2, _ = await solver.solve(url, challenge_wait=25, extra_wait=3.0)
+                            html2, st2, _hdrs_r = await solver.solve(url, challenge_wait=25, extra_wait=3.0)
                         if st2 < 400 and html2 and len(html2) > 20000:
                             html_sanitized = await asyncio.to_thread(sanitize_text, html2)
                             status = st2
                             _ok2 = True
+                            # 渲染落点优先；取不到就保持原值（**不猜**）
+                            _landed = self._final_url_of(headers=_hdrs_r)
+                            if _landed:
+                                _final_url = _landed
                             self._log(f"{_why} 渲染兜底成功: len={len(html2)} "
-                                      f"({self._render_success_count}/{_render_budget})")
+                                      f"({self._render_success_count}/{_render_budget})"
+                                      + (f" 落点={_landed[:50]}" if _landed else ""))
                     except Exception as e2:
                         logger.debug(f"403 render: {e2}")
                     if not _ok2:
@@ -662,7 +879,7 @@ class PageProcessor:
 
             if status == 200 and html_sanitized:
                 # [v2.17 B2-S1] 解析段组件化（纯代码搬移——规则翻页入队等副作用语义原样保持）
-                data = await self._parse_page(html_sanitized, url, job, uh)
+                data = await self._parse_page(html_sanitized, url, job, uh, _final_url)
                 # [v2.17 B4b] 证据驱动动态优先级（默认关——规则命中提前/空壳后排）
                 if getattr(self.crawler, '_dynamic_priority', False):
                     try:
@@ -675,7 +892,7 @@ class PageProcessor:
                 # [v2.17 0-5b] 占位渲染前移到质量闸之前（预算内；成功则后续质量/导出
                 # 基于渲染后数据——真·空壳等待渲染，不再被闸一票否决）
                 data, html_sanitized = await self._maybe_render_placeholder(
-                    data, html_sanitized, url)
+                    data, html_sanitized, url, _final_url)
                 # [v2.18 P1-6] 质量闸前移：低分页在写 extracted/jsonl/csv 之前拒收隔离
                 # （旧序先 _persist_export 再 _validate_quality——"隔离"承诺落空：拒收页
                 # 已落盘，且 _persist_export 与拒收路径各计一次 done → 双计数）
@@ -706,7 +923,7 @@ class PageProcessor:
                 # [v2.17 B2-S3] 入队段组件化（视频/图片/B站/电商/通用渲染——保序搬移）
                 data, html_sanitized = await self._enqueue_and_render(
                     data, html_sanitized, url, domain)
-                await self._discover_links(data, url, html_sanitized, job, uh)
+                await self._discover_links(data, url, html_sanitized, job, uh, _final_url)
 
                 # 无租约任务：保持旧语义（此刻才置 done）
                 if job.get('leased_at') is None:
@@ -829,6 +1046,10 @@ class PageProcessor:
                 links = [l for l in raw_links if l.startswith(('http://', 'https://'))
                          and not any(ns in l for ns in ('w3.org/', 'schemas.microsoft', 'xmlns.com', 'purl.org'))
                          and not self._is_junk_link(l)
+                         and not is_shortener_misresolution(l)
+                         # [v6 修复·R6] 短链误解析的假 URL 在这里就挡掉：
+                         # 它们会变成**页面任务**白抓一次、失败后再**白起一次浏览器**渲染兜底。
+                         # 真机实测一次抓取刷出十几条这种地址。
                          and (not cleaner or not cleaner.filter_junk_url(l))]
             except Exception:
                 links = []

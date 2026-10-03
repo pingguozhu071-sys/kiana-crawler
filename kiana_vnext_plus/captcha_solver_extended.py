@@ -93,9 +93,53 @@ class ExtendedChallengeSolver:
                 return 'click_captcha'
 
             # 11. 极验 GeeTest v3/v4
-            if any(kw in lower for kw in ['geetest', 'gt.js', 'gt_challenge',
-                                           'geetest_4', 'g4_', 'captcha.geetest']):
-                return 'geetest'
+            #
+            # [v6 修复·P-A **真机实测，这是整个 GeeTest 问题的真正根因**]
+            # 原来只匹配 HTML 里的**裸字符串** `'geetest'`。
+            # 真机实测（25 页 B站抓取）：
+            #     `检测到挑战 [geetest]` **17 次**
+            #     而我加的诊断把页面真实类名打出来 —— **`[]`，一个 geetest 元素都没有**
+            #     入口点击 0 次（没有元素可点），`slider not found` 17 次
+            # ⇒ **检测是误报**：B站页面里必然含 `geetest` 这个词
+            #   （预加载脚本 URL / 风控 JS 里的字样），但**页面上根本没有极验控件**。
+            #   代价：白起 17 次浏览器 + 刷 17 行"找不到滑块"，把排查引向
+            #   "选择器是不是不对"这条**错误的路**（我先后怀疑过 iframe、选择器，
+            #   两轮都改了代码 —— 虽然那两处**确实也是真 bug**，但都不是主因）。
+            #
+            # **修法：要求"结构证据"，不接受"文本里出现过"**。
+            # 强证据（页面真的在跑极验）：
+            #   · 存在 geetest 的 DOM 元素；
+            #   · 存在 `script[src*=geetest]` / `gt4.js` / `gt.js` 的**脚本标签**；
+            #   · 存在全局 `window.initGeetest` / `window.geetest`。
+            # 文本里的 `geetest` 字样**只作为弱信号保留**，必须上面任一条成立才算数。
+            _gt_text = any(kw in lower for kw in ['geetest', 'gt.js', 'gt_challenge',
+                                                  'geetest_4', 'g4_', 'captcha.geetest'])
+            if _gt_text:
+                # ⚠️ **只认 DOM 元素**。我第一版还把
+                # `script[src*=geetest]` 与 `window.initGeetest` 也算强证据 ——
+                # 真机复跑证明**它们太松**：B站**预加载**了极验 JS，
+                # 于是检测数只从 17 降到 2，而那 2 次页面上仍然 `[]`（零元素）。
+                # **脚本被加载 ≠ 有挑战在跑**，只有控件真的渲染出来才算。
+                _probe = """() => {
+                    if (document.querySelector('[class*="geetest"]')) return true;
+                    return Boolean(window.geetest_obj || window.geetest_4_obj);
+                }"""
+                _strong = False
+                try:
+                    _strong = bool(await self.page.evaluate(_probe))
+                    if not _strong:
+                        # 有可能挑战正在渲染（脚本刚加载完）→ **等一次**再判，
+                        # 避免把"马上就出现的真挑战"漏掉。
+                        await asyncio.sleep(2.0)
+                        _strong = bool(await self.page.evaluate(_probe))
+                except Exception as e:
+                    # 取不到 DOM 证据时**宁可放过**（不报 geetest）：
+                    # 误报的代价是白起浏览器 + 把排查引偏，比漏报贵得多。
+                    logger.debug(f"geetest 结构证据探测失败，按未检测处理: {e}")
+                if _strong:
+                    return 'geetest'
+                logger.info("页面上出现过 geetest 字样但**没有极验控件**（DOM 探测为空，"
+                            "等 2s 复判仍为空）—— 判定为误报，不当作挑战")
 
             # 12. AWS WAF
             if any(kw in lower for kw in ['awswaf', 'aws-waf', 'challenge.js',
@@ -191,6 +235,65 @@ class ExtendedChallengeSolver:
         return False
 
     # ═══════════════════════════════════════════════════════════════
+    # 0. 跨 frame 定位（所有求解器共用）
+    # ═══════════════════════════════════════════════════════════════
+    async def _loc(self, selector: str):
+        """在**主文档与所有子 frame** 里找元素；都没有就返回**必然匹配不到**的 locator。
+
+        [v6 修复·P-A 根因] 原实现到处直接用 `self.page.locator(sel)` ——
+        Playwright 的 `page.locator()` **不跨 iframe**。而 **GeeTest、京东 nlogin
+        等挑战恰恰渲染在子 frame 里**。于是出现一个自相矛盾的组合：
+
+          · **检测阶段**能看到挑战 —— `solver_engine` 把**所有 frame 的 HTML**
+            聚合成 `_frames_html` 传进 `detect(extra_html=...)`；
+          · **求解阶段**永远找不到滑块 —— 只搜主文档。
+
+        真机日志里每次都是 `GeeTest slider not found`，根因就在这里：
+        **检测看得见、求解够不着**。
+
+        返回 `Locator` 而不是 `(locator, frame)`：坐标方面 Playwright 的
+        `bounding_box()` 本来就给**视口相对**坐标，跨 frame 拖拽不受影响；
+        返回"必然匹配不到"的空 locator 则让调用方**不必加 None 判断**
+        （`await el.count()` 自然还是 0），改动面最小。
+        """
+        try:
+            loc = self.page.locator(selector)
+            if await loc.count() > 0:
+                return loc
+        except Exception:
+            pass
+        # 主文档没有 → 逐个 frame 找（挑战弹窗通常在子 frame 里）
+        try:
+            frames = list(self.page.frames)
+        except Exception:
+            frames = []
+        for fr in frames:
+            try:
+                if fr is self.page.main_frame:
+                    continue
+                loc = fr.locator(selector)
+                if await loc.count() > 0:
+                    return loc
+            except Exception:
+                continue
+        return self.page.locator("__kiana_no_such_element__")
+
+    async def _find_first(self, selectors):
+        """按顺序在**主文档与所有 frame** 里找第一个命中的选择器。
+
+        返回 `(locator, selector)`；都没找到返回 `(None, "")`。
+        给需要 `element_handle` / `bounding_box` 的调用方用。
+        """
+        for sel in selectors:
+            loc = await self._loc(sel)
+            try:
+                if await loc.count() > 0:
+                    return loc, sel
+            except Exception:
+                continue
+        return None, ""
+
+    # ═══════════════════════════════════════════════════════════════
     # 8. 图形文字验证码求解
     # ═══════════════════════════════════════════════════════════════
     async def _solve_image_captcha(self) -> bool:
@@ -216,7 +319,7 @@ class ExtendedChallengeSolver:
 
                 img_element = None
                 for sel in img_selectors:
-                    el = self.page.locator(sel)
+                    el = await self._loc(sel)   # [v6] 跨 frame
                     if await el.count() > 0:
                         img_element = await el.first.element_handle()
                         break
@@ -248,7 +351,7 @@ class ExtendedChallengeSolver:
                     'input.captcha', 'input.verifycode',
                 ]
                 for sel in input_selectors:
-                    inp = self.page.locator(sel)
+                    inp = await self._loc(sel)   # [v6] 跨 frame
                     if await inp.count() > 0:
                         await inp.first.click()
                         await asyncio.sleep(random.uniform(0.1, 0.3))
@@ -274,7 +377,7 @@ class ExtendedChallengeSolver:
                 'canvas#captcha', 'canvas.captcha',
             ]
             for sel in img_selectors:
-                el = self.page.locator(sel)
+                el = await self._loc(sel)   # [v6] 跨 frame
                 if await el.count() > 0:
                     img_element = await el.first.element_handle()
                     screenshot = await img_element.screenshot()
@@ -289,7 +392,7 @@ class ExtendedChallengeSolver:
                             'input[name="vcode"]', 'input.verifycode',
                         ]
                         for isel in input_selectors:
-                            inp = self.page.locator(isel)
+                            inp = await self._loc(isel)   # [v6] 跨 frame
                             if await inp.count() > 0:
                                 await inp.first.click()
                                 await asyncio.sleep(random.uniform(0.1, 0.3))
@@ -350,11 +453,11 @@ class ExtendedChallengeSolver:
                     '.yidun_slider', '.JCap-slide-btn',
                 ]
                 slider = None
-                for sel in slider_selectors:
-                    el = self.page.locator(sel)
-                    if await el.count() > 0:
-                        slider = await el.first.element_handle()
-                        break
+                _matched = ""
+                # [v6] 同 GeeTest：改走 `_find_first`（跨 frame + 报出命中的选择器）
+                _loc1, _matched = await self._find_first(slider_selectors)
+                if _loc1 is not None:
+                    slider = await _loc1.first.element_handle()
 
                 if not slider:
                     logger.warning("Slider element not found")
@@ -622,7 +725,7 @@ class ExtendedChallengeSolver:
             ]
             container = None
             for sel in container_selectors:
-                el = self.page.locator(sel)
+                el = await self._loc(sel)   # [v6] 跨 frame
                 if await el.count() > 0:
                     container = await el.first.element_handle()
                     break
@@ -656,7 +759,7 @@ class ExtendedChallengeSolver:
                                 await asyncio.sleep(random.uniform(0.3, 0.8))
 
                             # 点击确认按钮
-                            confirm = self.page.locator('.confirm, .submit, button[type="submit"]')
+                            confirm = await self._loc('.confirm, .submit, button[type="submit"]')   # [v6] 跨 frame
                             if await confirm.count() > 0:
                                 await asyncio.sleep(random.uniform(0.3, 0.6))
                                 await confirm.first.click(delay=random.randint(50, 150))
@@ -798,30 +901,95 @@ class ExtendedChallengeSolver:
             # 策略 2：本地滑块模拟
             logger.info("GeeTest: attempting local slider simulation")
 
+            # ── [v6 修复·P-A **实测**] 两步都是拿 GeeTest 官方 demo
+            #    （`geetest.com/en/demo`）抓真实 DOM 量出来的，不是猜的 ──────────
+            #
+            # ① **真实类名带实例 ID 后缀**：实测是 `geetest_box_btn_38052eff`。
+            #    所以 `.geetest_slider_button` 这类**普通类选择器永远匹配不上**
+            #    —— 真正的类名是 `geetest_slider_button_38052eff`，
+            #    不是 `geetest_slider_button`。
+            #    实测：引擎原来那 10 个选择器里 **8 个在真实 DOM 里命中数为 0**
+            #    （slider_button / btn_slide / slider / item-wrap / slider_wrap /
+            #      section / radar_tip / popup_wrap **全都不存在**）。
+            #    → 必须用**属性前缀选择器** `[class*="geetest_xxx"]`。
+            #
+            # ② **GeeTest 不是一上来就有滑块**：实测初始 DOM 里
+            #    `[class*="geetest_box_btn"]` / `[class*="geetest_btn_svg"]` /
+            #    `[class*="geetest_holder"]` 各命中 1 个（那是「点击验证」入口），
+            #    而所有滑块类名**命中 0** —— 滑块要**点开入口之后**才出现。
+            #    **引擎从来没点过那个入口**，直接去找滑块 ⇒ 即便选择器全对也找不到。
+            try:
+                # [v6 实测·2026-10-03] 顺序按"实测到的真实按钮"排：
+                # `geetest_btn_click` 是官方 demo 上**量出来的**「Click to verify」真按钮
+                # （300x50，文案 'Click to verify'）；
+                # 其余几个是在同一页面上量到的同层/同容器元素，作为兜底。
+                # —— 我第一版只写了 box_btn/btn_svg/holder，**恰恰漏了真正那个**。
+                for _sel in ('[class*="geetest_btn_click"]',
+                             '[class*="geetest_box_btn"]',
+                             '[class*="geetest_btn_svg"]',
+                             '[class*="geetest_holder"]'):
+                    _el = await self._loc(_sel)
+                    try:
+                        if await _el.count() > 0:
+                            await _el.first.click(timeout=3000)
+                            logger.info(f"GeeTest: 已点开验证入口（{_sel}）")
+                            await asyncio.sleep(1.5)   # 等挑战弹窗渲染
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.debug(f"GeeTest 入口点击失败（继续找滑块）: {e}")
+
             # 等待 GeeTest 弹窗加载（[FIXED & MODIFIED] 轮询等待替代固定 1-2s sleep，
             # 弹窗渲染慢时原逻辑直接判定滑块不存在）
+            # [v6] GeeTest 一律用**属性前缀**（容忍 `_xxxxxxxx` 实例后缀）；
+            # 后面的 `.nc_*` / `.JDJRV-*` / `.yidun_*` 是**别家**的选择器
+            # （阿里 / 京东 / 网易），对各自站点仍然有效，**原样保留** ——
+            # 删了会让那些站点退化。
             slider_selectors = [
-                '.geetest_slider_button', '.geetest_btn_slide',
-                '.geetest_slider', '.geetest_btn',
-                # GeeTest v4 选择器（B站等新站点用 v4 弹窗）
-                '.geetest-item-wrap', '.geetest_slider_wrap',
-                '.geetest_holder', '.geetest_section',
-                '.geetest_radar_tip', '.geetest_popup_wrap',
+                # ── GeeTest：前缀匹配，容忍实例后缀 ──
+                '[class*="geetest_slider_btn"]', '[class*="geetest_btn_slide"]',
+                '[class*="geetest_slider"]', '[class*="geetest_box_btn"]',
+                '[class*="geetest_btn_svg"]',
+                # ── 别家（阿里 / 京东 / 网易 / 通用）—— 原样保留 ──
+                '.slider_block', '.slide_block', '#slider',
+                '#nc_1_n1z', '.btn_slide', '.sliderbtn',
+                'div[role="slider"]', '.slider-button',
+                '.nc_iconfont.btn_slide', '.JDJRV-slide-btn',
+                '.yidun_slider', '.JCap-slide-btn',
             ]
             slider = None
+            _matched = ""
             deadline = time.time() + 6
             while time.time() < deadline:
-                for sel in slider_selectors:
-                    el = self.page.locator(sel)
-                    if await el.count() > 0:
-                        slider = await el.first.element_handle()
-                        break
-                if slider:
+                # [v6] 改走 `_find_first` —— 它跨 frame，**并且会报出是哪个选择器命中的**
+                # （排查价值：真机日志能直接看到"到底是哪条匹配上的"，
+                #   而原来只知道"找到了/没找到"）。
+                _loc2, _matched = await self._find_first(slider_selectors)
+                if _loc2 is not None:
+                    slider = await _loc2.first.element_handle()
                     break
                 await asyncio.sleep(0.3)
 
             if not slider:
-                logger.warning("GeeTest slider not found")
+                # [v6 诊断] 找不到时**把页面上真实的 geetest 类名打出来** ——
+                # 下次真机跑到这里，日志就能直接告诉我们"真实类名是什么"，
+                # 不用再靠猜（我已经用官方 demo 量过一批，但**站点可能用不同版本**）。
+                try:
+                    _names = await self.page.evaluate(
+                        """() => {
+                            const s = new Set();
+                            document.querySelectorAll('[class*="geetest"],[class*="yidun"],'
+                                + '[class*="JDJRV"],[id*="nc_"]').forEach(e => {
+                                (e.className || '').toString().split(/\\s+/).forEach(c => {
+                                    if (c) s.add(c);
+                                });
+                            });
+                            return Array.from(s).slice(0, 40);
+                        }""")
+                    logger.warning(f"GeeTest slider not found；页面上真实的挑战类名: {_names}")
+                except Exception as _e:
+                    logger.warning(f"GeeTest slider not found（类名探针也失败: {_e}）")
                 return False
 
             box = await slider.bounding_box()
@@ -851,10 +1019,35 @@ class ExtendedChallengeSolver:
             await asyncio.sleep(random.uniform(2, 4))
 
             # 检查是否通过
+            #
+            # [v6 修复·假成功] 原来判据里有个**裸的 `'success'`**：
+            #     any(kw in lower for kw in ['geetest_success', 'success', '验证成功'])
+            # `success` 在真实页面里到处都是（任何 JS 的 success 回调、埋点字段、按钮文案）。
+            # **实测：12 个真实站点样本里就有 2 个含它（17%）**，真实页面上只会更高
+            # ⇒ 滑块**明明没拖动**也会记成 `GeeTest slider passed` —— **假成功**，
+            # 正是本工程最忌讳的一类。
+            #
+            # 注：同文件 :500 附近**已有一处** v2.10.5 修过的同类问题（普通滑块），
+            # 这里漏了；两处现在都用"结构/具体信号"判。
+            #
+            # 与 v6 修 GeeTest **检测**误报同一个修法：**要结构证据，不要"文本里出现过"**。
             content = await self.page.content()
             lower = content.lower()
-            if any(kw in lower for kw in ['geetest_success', 'success', '验证成功']):
-                logger.info("GeeTest slider passed")
+            _specific = any(kw in lower for kw in
+                            ['geetest_success', 'geetest-success',
+                             '验证成功', '验证通过', '滑动验证成功'])
+            _dom_ok = False
+            if not _specific:
+                try:
+                    _dom_ok = bool(await self.page.evaluate(
+                        """() => Boolean(document.querySelector(
+                            '[class*="geetest_success"],[class*="geetest-success"],'
+                            + '[class*="geetest_lock_success"],[class*="geetest_slide_success"]'))"""))
+                except Exception:
+                    pass
+            if _specific or _dom_ok:
+                logger.info("GeeTest slider passed（依据: "
+                            + ("具体成功文本" if _specific else "DOM 成功态") + "）")
                 return True
 
             logger.warning("GeeTest slider attempt failed")
@@ -902,7 +1095,7 @@ class ExtendedChallengeSolver:
                         return True
 
                 # 尝试点击可能的验证按钮
-                btn = self.page.locator('button, input[type="button"], a.btn')
+                btn = await self._loc('button, input[type="button"], a.btn')   # [v6] 跨 frame
                 if await btn.count() > 0:
                     await btn.first.click(delay=random.randint(100, 300))
                     await asyncio.sleep(2)
@@ -1061,7 +1254,7 @@ class ExtendedChallengeSolver:
                 'input.math-input', 'input.captcha',
             ]
             for sel in input_selectors:
-                inp = self.page.locator(sel)
+                inp = await self._loc(sel)   # [v6] 跨 frame
                 if await inp.count() > 0:
                     await inp.first.click()
                     await asyncio.sleep(random.uniform(0.1, 0.3))

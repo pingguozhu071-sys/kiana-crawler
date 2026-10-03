@@ -3,20 +3,28 @@
 提供 24 个维度的浏览器指纹注入脚本，覆盖所有主流反爬检测点。
 每个脚本都使用 IIFE 封装，避免污染全局作用域。
 
-v4 增强（基于公开的浏览器协议层隐身实践）：
+v4 增强（基于 rebrowser-patches、patchright、puppeteer-extra-stealth 研究）：
 - Function.prototype.toString 一致性修复（防止 [native code] 泄漏）
 - Error.stack 清洗（移除注入脚本痕迹）
 - Proxy/Object.defineProperty 检测规避
 - CDP 变量深度清理（所有 cdc_ 前缀变量）
 - navigator.webdriver 多层清除（defineProperty + delete + prototype）
 - iframe contentWindow 一致性（防止跨 iframe 检测）
-- SourceURL 清洗（协议层配合）
+- SourceURL 清洗（配合 rebrowser-patches）
 
 v6 增强（基于 2026 GitHub 最新反检测研究）：
 - Chrome Runtime 完整对象树（loadTimes/csi/app 真实返回值）
 - Navigator.plugins 接口完整性（length/refresh/item/namedItem）
 - mediaSession / serviceWorker / IdleDetector stubs
 - Performance.timing 与 getEntriesByType 一致性
+
+v6 修复（真机"隐身链自证疑点（plugins=0）"的注入面根因）：
+- §2/§22 的 plugins 与 mimeTypes 守卫条件改判"**数量为 0 或属性不存在**"——
+  原判据 `typeof x.length === 'undefined'` 在 headless Chromium 下**恒为假**
+  （属性存在、length 已定义，只是值等于 0），整段伪造从未执行过。
+- 假 PluginArray/MimeTypeArray 改为**接口完整对象**：原型链挂真接口（instanceof 通过）、
+  length/item/namedItem/refresh 在原型上、实例只放数字索引、plugin 带数字索引 mimeType。
+- 只在"报 0 / 不存在"时才替换；浏览器本来就正常报数的不覆盖（避免画蛇添足）。
 """
 
 import json
@@ -75,41 +83,138 @@ def build_stealth_scripts(fp: dict) -> str:
         }};
     }} catch(e) {{}}
 
-    // ═══ 1. Navigator.webdriver 多层清除 ═══
+    // ═══ 1. Navigator.webdriver 隐藏 ═══
+    // [v6 修复] 这里原来有三处问题：
+    //  ① 原来用 `get: () => undefined` —— 但**真实 Chrome 返回的是 `false`**
+    //     （只有被自动化控制时才是 `true`）。返回 `undefined` 本身就是破绽：
+    //     真浏览器不会有这种值，等于告诉对方"这个属性被人动过"。
+    //     `evasion_engine` 里那一处早就写成 `false` 了，这里是漏改的几处之一。
+    //  ② 原来的"方法2: `delete navigator.webdriver`"把**刚在第 1 步定义的属性又删掉了**，
+    //     自相矛盾——净效果只剩第 3 步的原型改写。
+    //  ③ 实例与原型要**都**改：有的检测读实例自有属性，有的走原型链。
     try {{
-        // 方法1: defineProperty
-        Object.defineProperty(navigator, 'webdriver', {{
-            get: () => undefined, configurable: true
-        }});
-        // 方法2: delete（如果属性存在于实例上）
-        delete navigator.webdriver;
-        // 方法3: 修改原型链
-        if (Navigator.prototype.hasOwnProperty('webdriver')) {{
-            Object.defineProperty(Navigator.prototype, 'webdriver', {{
-                get: () => undefined, configurable: true
-            }});
-        }}
+        const _wd = {{ get: () => false, set: () => {{}}, configurable: true }};
+        Object.defineProperty(navigator, 'webdriver', _wd);
+        try {{
+            if (Navigator.prototype.hasOwnProperty('webdriver')) {{
+                Object.defineProperty(Navigator.prototype, 'webdriver', _wd);
+            }}
+        }} catch(e) {{}}
     }} catch(e) {{}}
 
-    // ═══ 2. Navigator.plugins 伪造 ═══
-    try {{
-        const fakePlugins = [
-            {{name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format'}},
-            {{name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format'}},
-            {{name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format'}},
-            {{name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format'}},
-            {{name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format'}},
-        ];
-        Object.defineProperty(navigator, 'plugins', {{
-            get: () => fakePlugins, configurable: true
+    // ═══ 2. Navigator.plugins / mimeTypes 伪造 ═══
+    // [v6 修复] 原实现两处硬伤，一并重写：
+    //   1) 用**普通数组**冒充 PluginArray/MimeTypeArray —— 真接口的 length/item/namedItem/
+    //      refresh 都在**原型**上、实例上只有数字索引；`instanceof PluginArray`、
+    //      `Object.prototype.toString.call()`、`hasOwnProperty` 三选一就能识破。
+    //      plugin 对象同样缺 length 与"数字索引的 mimeType"。
+    //   2) **无条件覆盖**：有头浏览器本来就报 5 个 plugin / 2 个 mimeType，把真接口换成
+    //      假数组是画蛇添足（白白多一个破绽）。现改为只在"报 0 或压根不存在"时才安装。
+    // 关键约束：host 对象的 length 一般**不可配置**，改不动单个属性 —— 只能整体替换对象；
+    //          且新接口定义在 Navigator.prototype 上（真 Chrome 的 plugins 就在原型上，
+    //          写成实例自有属性会被 `navigator.hasOwnProperty('plugins')` 识破）。
+    const __KIANA_PLUGIN_NAMES = [
+        'PDF Viewer', 'Chrome PDF Viewer', 'Chromium PDF Viewer',
+        'Microsoft Edge PDF Viewer', 'WebKit built-in PDF',
+    ];
+    const __KIANA_MIME_SPECS = [
+        ['application/pdf', 'pdf', 'Portable Document Format'],
+        ['text/pdf', 'pdf', 'Portable Document Format'],
+    ];
+    // 造"像真接口"的类数组：原型链接到真 PluginArray/MimeTypeArray（instanceof 通过），
+    // length 与方法挂原型、实例上只放数字索引 —— 与真实 WebIDL 接口同形。
+    const __kianaMakeArrayLike = function(tagName, ctor, items, methods) {{
+        const base = (typeof ctor === 'function' && ctor.prototype) ? ctor.prototype : Object.prototype;
+        const proto = Object.create(base);
+        Object.defineProperty(proto, 'length', {{ get: () => items.length, configurable: true }});
+        methods.forEach(function(m) {{
+            Object.defineProperty(proto, m[0], {{ value: m[1], configurable: true, writable: true }});
         }});
-        Object.defineProperty(navigator, 'mimeTypes', {{
-            get: () => [
-                {{type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format'}},
-                {{type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format'}},
-            ], configurable: true
+        // Object.prototype.toString.call(navigator.plugins) 必须仍是 [object PluginArray]
+        try {{ Object.defineProperty(proto, Symbol.toStringTag, {{ value: tagName, configurable: true }}); }} catch(e) {{}}
+        const arr = Object.create(proto);
+        items.forEach(function(item, i) {{
+            Object.defineProperty(arr, i, {{ value: item, enumerable: true, configurable: true }});
         }});
-    }} catch(e) {{}}
+        return arr;
+    }};
+    // 一次造好 plugins 与 mimeTypes —— 两者**互相引用**（plugin[i] → mimeType，
+    // mimeType.enabledPlugin → plugin），真 Chrome 就是这个形状。
+    const __kianaBuildPluginFakes = function() {{
+        const mimeCtor = (typeof MimeType !== 'undefined') ? MimeType : null;
+        const mimes = __KIANA_MIME_SPECS.map(function(spec) {{
+            const mime = Object.create(mimeCtor ? mimeCtor.prototype : Object.prototype);
+            Object.defineProperties(mime, {{
+                type: {{ value: spec[0], enumerable: true, configurable: true }},
+                suffixes: {{ value: spec[1], enumerable: true, configurable: true }},
+                description: {{ value: spec[2], enumerable: true, configurable: true }},
+            }});
+            try {{ Object.defineProperty(mime, Symbol.toStringTag, {{ value: 'MimeType', configurable: true }}); }} catch(e) {{}}
+            return mime;
+        }});
+        const pluginCtor = (typeof Plugin !== 'undefined') ? Plugin : null;
+        const plugins = __KIANA_PLUGIN_NAMES.map(function(name) {{
+            const plugin = __kianaMakeArrayLike('Plugin', pluginCtor, mimes, []);
+            Object.defineProperties(plugin, {{
+                name: {{ value: name, enumerable: true, configurable: true }},
+                filename: {{ value: 'internal-pdf-viewer', enumerable: true, configurable: true }},
+                description: {{ value: 'Portable Document Format', enumerable: true, configurable: true }},
+            }});
+            return plugin;
+        }});
+        mimes.forEach(function(mime) {{
+            // 必须用 defineProperty 立**自有数据属性**：MimeType.prototype 上本来是
+            // 一个**只读访问器**，直接 `mime.enabledPlugin = ...` 在非严格模式下会被
+            // 静默忽略（原型上的 setter 缺失），之后读它就会走到原生 getter 的
+            // brand check → 页面拿到 "TypeError: Illegal invocation"（真机已实测到）。
+            try {{
+                Object.defineProperty(mime, 'enabledPlugin', {{
+                    value: plugins[0], enumerable: true, configurable: true, writable: true,
+                }});
+            }} catch(e) {{}}
+        }});
+        const mimeArray = __kianaMakeArrayLike('MimeTypeArray',
+            (typeof MimeTypeArray !== 'undefined') ? MimeTypeArray : null, mimes, [
+                ['item', function(i) {{ return mimes[i] || null; }}],
+                ['namedItem', function(name) {{
+                    for (let i = 0; i < mimes.length; i++) {{ if (mimes[i].type === name) return mimes[i]; }}
+                    return null;
+                }}],
+                ['refresh', function() {{}}],
+            ]);
+        const pluginArray = __kianaMakeArrayLike('PluginArray',
+            (typeof PluginArray !== 'undefined') ? PluginArray : null, plugins, [
+                ['item', function(i) {{ return plugins[i] || null; }}],
+                ['namedItem', function(name) {{
+                    for (let i = 0; i < plugins.length; i++) {{ if (plugins[i].name === name) return plugins[i]; }}
+                    return null;
+                }}],
+                ['refresh', function() {{}}],
+            ]);
+        return {{ plugins: pluginArray, mimeTypes: mimeArray }};
+    }};
+    // 只在"浏览器报 0 / 属性不存在"时安装 —— 本来就正常报数的不动它（避免画蛇添足）
+    const __kianaInstallPluginFakes = function() {{
+        const curPlugins = navigator.plugins;
+        const curMimes = navigator.mimeTypes;
+        const needPlugins = !curPlugins || curPlugins.length === 0;
+        const needMimes = !curMimes || curMimes.length === 0;
+        if (!needPlugins && !needMimes) return false;
+        const fakes = __kianaBuildPluginFakes();
+        const install = function(prop, value) {{
+            const target = (typeof Navigator !== 'undefined' && Navigator.prototype)
+                ? Navigator.prototype : navigator;
+            try {{
+                Object.defineProperty(target, prop, {{ get: () => value, configurable: true }});
+            }} catch (e) {{
+                Object.defineProperty(navigator, prop, {{ get: () => value, configurable: true }});
+            }}
+        }};
+        if (needPlugins) install('plugins', fakes.plugins);
+        if (needMimes) install('mimeTypes', fakes.mimeTypes);
+        return true;
+    }};
+    try {{ __kianaInstallPluginFakes(); }} catch(e) {{}}
 
     // ═══ 3. Navigator.languages & platform ═══
     try {{
@@ -416,7 +521,7 @@ def build_stealth_scripts(fp: dict) -> str:
                         try {{
                             // 确保 iframe 内的 navigator.webdriver 也是 undefined
                             Object.defineProperty(win.navigator, 'webdriver', {{
-                                get: () => undefined, configurable: true
+                                get: () => false, configurable: true
                             }});
                         }} catch(e) {{}}
                     }}
@@ -427,7 +532,7 @@ def build_stealth_scripts(fp: dict) -> str:
         }}
     }} catch(e) {{}}
 
-    // ═══ 18. SourceURL 清洗（协议层配合） ═══
+    // ═══ 18. SourceURL 清洗（配合 rebrowser-patches） ═══
     // 移除 evaluate() 添加的 //# sourceURL=pptr:... 痕迹
     try {{
         const origToString = Function.prototype.toString;
@@ -536,12 +641,22 @@ def build_stealth_scripts(fp: dict) -> str:
     }} catch(e) {{}}
 
     // ═══ 22. Navigator.plugins 接口完整性 ═══
-    // 真实 PluginArray 不是普通数组，需要 length/refresh/item/namedItem
+    // 真实 PluginArray 不是普通数组，需要 length/refresh/item/namedItem。
+    // [v6 修复] 原守卫 `typeof pluginsObj.length === 'undefined'` **恒为假**：
+    //   headless Chromium 里 navigator.plugins **存在**、length **也已定义**，只是值等于 0；
+    //   于是这整段伪造从来没有真正执行过（真机自证日志：隐身链自证疑点（plugins=0）×5）。
+    //   判据改为"不存在 **或** 数量为 0"，并直接整体替换成 §2 那个接口完整的假对象
+    //   （host 对象的 length 通常不可配置，defineProperty 改不动它，只能换掉整个对象）。
+    // 保留"逐接口补齐"这一段：它修的是"别的注入层/浏览器插件留下的半成品对象"，
+    //   与上面的整体替换互补，且此时对象已是真 PluginArray 时各分支自然跳过。
     try {{
-        const pluginsObj = navigator.plugins;
-        if (pluginsObj && typeof pluginsObj.length === 'undefined') {{
-            Object.defineProperty(pluginsObj, 'length', {{ get: () => 5, configurable: true }});
+        // [v6 修复] 守卫判据：**"不存在" 或 "数量为 0"** —— 就是这里原来写错，
+        // 用 `typeof x.length === 'undefined'` 去判断一个"存在但为空"的量，恒为假。
+        const _emptyInterface = function(obj) {{ return !obj || obj.length === 0; }};
+        if (_emptyInterface(navigator.plugins) || _emptyInterface(navigator.mimeTypes)) {{
+            try {{ __kianaInstallPluginFakes(); }} catch(e) {{}}
         }}
+        const pluginsObj = navigator.plugins;
         if (pluginsObj && typeof pluginsObj.refresh !== 'function') {{
             pluginsObj.refresh = function() {{}};
         }}
@@ -556,11 +671,11 @@ def build_stealth_scripts(fp: dict) -> str:
                 return null;
             }};
         }}
-        // MIME types 接口完整性
+        // MIME types 接口完整性 —— [v6 修复] 与 plugins **同一个 bug**：
+        // headless 下 mimeTypes 存在、length 已定义且等于 0，原 `typeof length === 'undefined'`
+        // 同样恒为假；整体替换已由上面的 __kianaInstallPluginFakes() 在"0 或不存在"时完成，
+        // 这里只补接口（对象本来就是真 MimeTypeArray 时各分支自然跳过）。
         const mimeObj = navigator.mimeTypes;
-        if (mimeObj && typeof mimeObj.length === 'undefined') {{
-            Object.defineProperty(mimeObj, 'length', {{ get: () => 2, configurable: true }});
-        }}
         if (mimeObj && typeof mimeObj.item !== 'function') {{
             mimeObj.item = function(i) {{ return mimeObj[i] || null; }};
         }}
@@ -663,7 +778,7 @@ def build_stealth_scripts(fp: dict) -> str:
 # ── 保留兼容性常量（旧代码可能引用）──────────────────────────────────
 HEADLESS_OVERWRITE_SCRIPT = """
 (() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
     Object.defineProperty(navigator, 'plugins', {
         get: () => [
             {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},

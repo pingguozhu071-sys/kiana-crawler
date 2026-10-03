@@ -106,6 +106,45 @@ def build_ultimate_evasion_scripts(fp: dict) -> str:
                     }});
                 }}
 
+                // [v6 修复] **SDP 路径必须同样过滤 srflx**。
+                // 只拦 onicecandidate 是不够的：ICE 候选**也写在 SDP 里**，
+                // 页面读 `pc.localDescription.sdp` 就能拿到被事件过滤掉的那条 srflx，
+                // 从而绕过整套过滤拿到真实公网 IP（本工程把 WebRTC 当泄漏面来防，
+                // 所以这条属于"看起来有防护、实际有"的真缺口）。
+                // 任何异常一律回退原描述——宁可不改，也不能把 WebRTC 弄坏。
+                ['localDescription', 'remoteDescription'].forEach(function(prop) {{
+                    const d = Object.getOwnPropertyDescriptor(origRTC.prototype, prop);
+                    if (d && d.get) {{
+                        Object.defineProperty(pc, prop, {{
+                            configurable: true,
+                            get: function() {{
+                                let desc;
+                                try {{ desc = d.get.call(pc); }} catch (e) {{ return null; }}
+                                try {{
+                                    if (desc && typeof desc.sdp === 'string'
+                                        && desc.sdp.indexOf('srflx') >= 0) {{
+                                        // [v6 修复] 这里的换行必须写成 JS 转义序列（两个字符），
+                                        // 不能是**真实换行**：本函数返回的是 **f-string 模板**，
+                                        // 直接写出单个反斜杠，会被 Python 先解释成**真实 CR/LF 字符**
+                                        // 塞进 JS 字符串字面量里，生成的脚本直接语法错误 ——
+                                        // 而它和 §1-§3 层是拼成**同一个** add_init_script 的，
+                                        // 一处语法错误会让**整条 55 维链**一行都不执行
+                                        // （真机表现：plugins=0 自证告警 ×5，而 webdriver 是干净的
+                                        //  —— 那是另一条独立脚本 evasion_v2 遮的）。
+                                        const sdp = desc.sdp.split('\\r\\n').filter(function(l) {{
+                                            return !(l.indexOf('a=candidate:') === 0
+                                                     && l.indexOf('srflx') >= 0);
+                                        }}).join('\\r\\n');
+                                        return new RTCSessionDescription(
+                                            {{ type: desc.type, sdp: sdp }});
+                                    }}
+                                }} catch (e) {{ /* 回退原描述 */ }}
+                                return desc;
+                            }},
+                        }});
+                    }}
+                }});
+
                 return pc;
             }};
             PatchedRTC.prototype = origRTC.prototype;

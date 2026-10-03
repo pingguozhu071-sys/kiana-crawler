@@ -5,16 +5,27 @@
 现行替代（按用途选）：
   · 五页截图 + 控件断言：`python tools/v9_smoke.py`（移屏外，产出 tests/assets/gui_shots/v9_*.png）
   · 离屏性能探针（稳态停顿 <200ms）：`python tools/gui_perf_probe.py`
-保留原因：仅作 v8 壳的历史对照。改 GUI 时请勿参考本文件。"""
+保留原因：仅作 v8 壳的历史对照。改 GUI 时请勿参考本文件。
+
+[v2.19.9] 另加**默认隔离**：它 import 的是 `launcher_v8` 并构造 `KianaV8()` ——
+当前那条交互路径不写配置，但 `launcher_v8.CONFIG_FILE` 一样指向机主真配置，
+一旦界面路径有变就是"跑一次冒烟改一次机主配置"。默认重定向数据根，`--real` 可关。
+"""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QTimer
+# ⚠️ 必须在 import launcher_v8 **之前**激活（见 _tools_isolation 的模块说明）
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _tools_isolation import activate  # noqa: E402
+
+activate("gui_smoke_shot")
+
+from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import QTimer  # noqa: E402
 
 app = QApplication(sys.argv)
-import launcher_v8
+import launcher_v8  # noqa: E402
 
 win = launcher_v8.KianaV8() if hasattr(launcher_v8, "KianaV8") else None
 assert win is not None, "未找到主窗口类 KianaV8"

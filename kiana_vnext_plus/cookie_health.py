@@ -3,77 +3,131 @@
 用户自填 cookies 后，GUI/CLI 可调此模块验证各站登录态是否有效（过期/失效时提前提示）。
 仅暴露健康状态，绝不输出任何 cookie 值。
 """
-import os
 import pathlib
 import logging
 
 logger = logging.getLogger(__name__)
 
+# ── 探针三态：**只有 expired 才允许判死** ──────────────────────────────────
+# 原实现把"网络超时/连不上"与"登录态失效"**都**返回 ok=False，二者不可区分。
+# 一旦拿它去做冷却，一次线路抖动就会把健康身份误杀——这正是工程反复踩的
+# "看起来有防护、实际误杀"。故显式区分第三态 unknown，并提供判定助手。
+PROBE_OK = "ok"            # 登录态有效
+PROBE_EXPIRED = "expired"  # **明确**未登录（服务端明确回复）→ 可以冷却/退役
+PROBE_UNKNOWN = "unknown"  # 网络异常/超时/风控码/解析失败 → **不得判死**，只记录
+
+
+def probe_should_punish(status: str) -> bool:
+    """探针三态 → 是否允许判死（冷却/退役）。**只有明确 expired 才允许**。
+
+    把这条做成函数而不是散在各调用点的 `if`，是为了让"超时不判死"这条纪律
+    可测试、并防止后来者顺手写成 `if not ok: 冷却`。
+    """
+    return status == PROBE_EXPIRED
+
 
 def _cookie_files() -> list:
-    """解析用户自填 cookies 文件路径（KIANA_COOKIE_FILES 分号或换行 / KIANA_COOKIE_FILE / 默认）"""
-    from .cookie_utils import parse_cookie_file_list
-    envs = os.environ.get("KIANA_COOKIE_FILES") or ""
-    if envs:
-        return parse_cookie_file_list(envs)
-    one = os.environ.get("KIANA_COOKIE_FILE")
-    if one:
-        return [one]
-    default = pathlib.Path(os.environ.get("LOCALAPPDATA", "")) / "KianaVnextPlus" / "cookies.txt"
-    return [str(default)] if default.exists() else []
+    """cookies 文件路径列表 —— **委托给唯一入口 `cookie_utils.cookie_source_files()`**。
+
+    [v6 修复·**同一能力两份实现**] 这段逻辑原来在**本函数**与
+    `universal_downloader._cookie_sources()` 里**逐字重复**了一遍
+    （都是 KIANA_COOKIE_FILES → KIANA_COOKIE_FILE → 默认 cookies.txt）。
+    两处各写一份的后果是**每次改动都得改两遍**，漏一处就静默分叉。
+    现统一到 `cookie_utils.cookie_source_files()`，本函数只转发。
+
+    顺带：唯一入口里**新增了持久化配置档的自动发现**
+    （`profiles/*/cookies.txt`），本函数因此也自动受益 ——
+    用户用 `tools/cookie_login.py` 登录过之后，这里就能看见了。
+    """
+    from .cookie_utils import cookie_source_files
+    return cookie_source_files()
 
 
 def _domain_cookies(cookie_files: list, domain: str) -> dict:
     """从多个 Netscape cookie 文件收集指定域的 cookies（不返回值，只返回是否含核心字段）"""
+    # [v6] 本处过滤是"域名字符串包含"（比域后缀匹配宽），保留原样
+    from .cookie_utils import parse_netscape_cookies
     names = set()
     for kf in cookie_files:
         p = pathlib.Path(kf)
         if not p.exists():
             continue
         try:
-            for line in p.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    continue
-                parts = s.split("\t")
-                if len(parts) < 7:
-                    continue
-                host = (parts[0] or "").lower()
-                if domain in host:
-                    names.add(parts[5])
+            text = p.read_text(encoding="utf-8-sig", errors="ignore")
+            for c in parse_netscape_cookies(text):
+                if domain in str(c["domain"] or "").lower():
+                    names.add(str(c["name"]))
         except Exception:
             pass
     return names
 
 
 def check_bilibili(cookie_files: list) -> dict:
-    """B站登录态自检：nav API 验证（仅返回状态，不打印 cookie）"""
+    """B站登录态自检：nav API 验证（仅返回状态，不打印 cookie）
+
+    返回 `{"ok": bool, "status": "ok"|"expired"|"unknown", "msg": str, "fields": [...]}`。
+
+    **三态语义（调用方必须遵守，用 `probe_should_punish` 判定）**：
+      ok       → 登录态有效
+      expired  → **明确**未登录（服务端明确回复）→ 可以冷却
+      unknown  → 网络异常 / 超时 / 风控码 / 解析失败 → **不得判死**
+
+    `ok` 字段为兼容既有 GUI 显示而保留（unknown 与 expired 均为 False），
+    **不要**用 `ok` 单独决策是否惩罚身份。
+    """
     try:
         from curl_cffi import requests
+        from .cookie_utils import parse_netscape_cookies
         jar = {}
         for kf in cookie_files:
             p = pathlib.Path(kf)
             if not p.exists():
                 continue
-            for line in p.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    continue
-                parts = s.split("\t")
-                if len(parts) >= 7 and "bilibili" in (parts[0] or "").lower():
-                    jar[parts[5]] = parts[6]
+            text = p.read_text(encoding="utf-8-sig", errors="ignore")
+            for c in parse_netscape_cookies(text):
+                if "bilibili" in str(c["domain"] or "").lower():
+                    jar[str(c["name"])] = str(c["value"])
         if not jar:
-            return {"ok": False, "msg": "未找到 B站 cookies", "fields": []}
-        r = requests.get("https://api.bilibili.com/x/web-interface/nav",
-                         cookies=jar, impersonate="chrome", timeout=10)
-        d = r.json()
+            return {"ok": False, "status": PROBE_UNKNOWN,
+                    "msg": "未找到 B站 cookies（无内容可判定）", "fields": []}
+
+        try:
+            r = requests.get("https://api.bilibili.com/x/web-interface/nav",
+                             cookies=jar, impersonate="chrome", timeout=10)
+        except Exception as e:
+            # 线路/超时问题：**不是**登录态结论
+            return {"ok": False, "status": PROBE_UNKNOWN,
+                    "msg": f"B站自检未能完成（网络/超时，登录态未判定）: {type(e).__name__}",
+                    "fields": []}
+
+        try:
+            d = r.json()
+        except Exception as e:
+            return {"ok": False, "status": PROBE_UNKNOWN,
+                    "msg": f"B站自检响应无法解析（未判定）: {type(e).__name__}", "fields": []}
+
+        code = d.get("code")
         data = d.get("data") or {}
-        if d.get("code") == 0 and data.get("isLogin"):
-            return {"ok": True, "msg": f"B站登录态有效 (会员={data.get('vipStatus')})",
+        if code == 0 and data.get("isLogin"):
+            return {"ok": True, "status": PROBE_OK,
+                    "msg": f"B站登录态有效 (会员={data.get('vipStatus')})",
                     "fields": sorted(jar.keys())}
-        return {"ok": False, "msg": f"B站登录态失效 (code={d.get('code')})", "fields": []}
+        if code == 0 or code == -101:
+            # 服务端明确回复"未登录"——这是唯一可以判死的情形
+            return {"ok": False, "status": PROBE_EXPIRED,
+                    "msg": f"B站登录态失效（服务端明确未登录，code={code}）", "fields": []}
+        # 其余状态码（如 -412 风控）不构成登录态结论 → 不判死
+        return {"ok": False, "status": PROBE_UNKNOWN,
+                "msg": f"B站自检未判定（服务端返回 code={code}，可能是风控）", "fields": []}
     except Exception as e:
-        return {"ok": False, "msg": f"B站自检异常: {type(e).__name__}", "fields": []}
+        return {"ok": False, "status": PROBE_UNKNOWN,
+                "msg": f"B站自检异常（未判定）: {type(e).__name__}", "fields": []}
+
+
+# 真正做了**在线登录态验证**的站点 → 探针函数。
+# 不在此表的站点只有"域级存在性弱检查"（见 check_sites 的 note），
+# **不得**把它们当成登录态结论，更不得据此冷却身份。
+PROBE_REGISTRY = {"B站": check_bilibili}
 
 
 def check_sites() -> dict:

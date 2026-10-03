@@ -145,8 +145,10 @@ def main():
         asyncio.run(do_export())
 
     elif args.command == "cookie-add":
-        from .cookie_armory import CookieArmory, parse_cookie_file
-        db_path = ProjectIdentity(args.project).get_db_path()
+        from .cookie_armory import CookieArmory, parse_cookie_file, armory_db_path
+        # [v6 修复] 走**唯一**路径实现：原来这里用 `ProjectIdentity(args.project).get_db_path()`
+        # 而 `crawler` 用任务级路径 ⇒ 两者永远不是同一个库，存的号爬取读不到。
+        db_path = armory_db_path()
         master = _read_master_password()
         cookie_str = parse_cookie_file(args.file)
         if not cookie_str:
@@ -157,8 +159,8 @@ def main():
         print(f"✅ 账号 {args.name}@{args.site} 已加密入库" if ok else "❌ 入库失败")
 
     elif args.command == "cookie-list":
-        from .cookie_armory import CookieArmory
-        db_path = ProjectIdentity(args.project).get_db_path()
+        from .cookie_armory import CookieArmory, armory_db_path
+        db_path = armory_db_path()   # [v6 修复] 同上：唯一路径实现
         armory = CookieArmory(db_path, _read_master_password())
         rows = armory.list_accounts(args.site)
         if not rows:

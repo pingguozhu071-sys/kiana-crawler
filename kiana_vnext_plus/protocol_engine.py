@@ -8,7 +8,7 @@ import asyncio
 import logging
 import random
 from typing import Optional, Dict
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from .response_adapter import ResponseAdapter
 from .session_pool import SessionPool
 from .header_generator import generate_chrome_headers, merge_headers
@@ -53,11 +53,58 @@ class ProtocolEngine:
         # aiohttp 回退：复用单个 session + connector，避免每次请求都创建新会话
         self._aiohttp_session = None
         self._aiohttp_connector = None
+        # [v6 M1-c] 身份注入挂钩：由 crawler 在建池后挂上；None = 不注入（默认，零影响）
+        self.identity_pool_provider = None
+        # 注入失败计数——**可观测**：此前失败被静默吞掉，日志与界面都看不到
+        self.identity_inject_failures = 0
+        # [v6 M1-c] 页面级身份租约：{域: cookie 头}。由 page_processor 抓取前装入、
+        # finally 清除——**绝不跨页残留**。为空时行为与本特性引入前**完全一致**。
+        self.cookie_leases: Dict[str, str] = {}
+
+    # ── [v6 M1-c] 页面级身份租约 ──
+    def install_cookie_lease(self, domain: str, cookie: str) -> None:
+        """装入一次页面级身份租约（域 → cookie 头）。"""
+        if domain and cookie:
+            self.cookie_leases[str(domain).lower()] = cookie
+
+    def clear_cookie_lease(self, domain: str) -> None:
+        """清除租约。**务必放在 finally**——否则身份跨页残留，等于"用错账号"。"""
+        if domain:
+            self.cookie_leases.pop(str(domain).lower(), None)
+
+    def _lease_cookie_for(self, url: str) -> str:
+        """按 URL 域取租约 cookie；子域回退到父域（与 cookie 作用域语义一致）。"""
+        if not self.cookie_leases:
+            return ""
+        try:
+            dom = (urlsplit(url).hostname or "").lower()
+        except Exception:
+            return ""
+        if not dom:
+            return ""
+        ck = self.cookie_leases.get(dom, "")
+        if not ck:
+            parts = dom.split(".")
+            if len(parts) > 2:
+                ck = self.cookie_leases.get(".".join(parts[-2:]), "")
+        return ck
 
     async def init(self):
-        """初始化所有 TLS 指纹版本的客户端连接池"""
+        """初始化所有 TLS 指纹版本的客户端连接池。
+
+        [v6 修复·机主明确要求「反爬要看得见的日志、输出用中文」]
+        原来这里每个版本打一条**英文** INFO：
+            `ProtocolEngine: initialized TLS pool for chrome136`
+        问题有两个：
+          · **英文** —— 机主看日志要能直接读懂；
+          · **逐版本刷 5 行**但不说明"这意味着什么"——
+            用户看不出这是"反爬已就绪"还是"只是建了几个对象"。
+        现改成：**逐版本一行（中文）** + **末尾一句总结**，
+        总结里明说"这就是反爬在生效"以及"本次会用哪个版本"。
+        """
         if not HAS_CURL_CFFI:
-            logger.warning("curl_cffi not available, falling back to aiohttp")
+            logger.warning("⚠️ 反爬降级：curl_cffi 不可用 —— 本次请求**没有 TLS 指纹伪装**"
+                           "（会退回 aiohttp 裸奔，容易被识别为脚本）")
             return
 
         async with self._init_lock:
@@ -69,9 +116,9 @@ class ProtocolEngine:
                             impersonate=version,
                             timeout=30,
                         )
-                        logger.info(f"ProtocolEngine: initialized TLS pool for {version}")
+                        logger.info(f"反爬就绪：TLS 指纹客户端已建立 → {version}")
                     except Exception as e:
-                        logger.error(f"Failed to init TLS pool for {version}: {e}")
+                        logger.error(f"反爬异常：TLS 指纹 {version} 建立失败 —— {e}")
 
             # 确保默认版本存在
             if self.default_impersonate not in self._clients:
@@ -81,7 +128,23 @@ class ProtocolEngine:
                         timeout=30,
                     )
                 except Exception as e:
-                    logger.error(f"Failed to init default TLS pool: {e}")
+                    logger.error(f"反爬异常：默认 TLS 指纹 {self.default_impersonate} "
+                                 f"建立失败 —— {e}")
+
+            # [v6] **末尾一句总结** —— 机主要的是"看得见反爬在生效"，
+            # 逐版本那 5 行说明不了这件事（用户看不出是就绪还是只是建了对象）。
+            # ⚠️ **只在首次初始化时打**：`init()` 可能被调多次（现在 `crawler` 调一次，
+            # 将来别处也可能调），每次打就成了刷屏 —— 实测第二次调用会重复输出。
+            if not getattr(self, "_stealth_logged", False):
+                self._stealth_logged = True
+                if self._clients:
+                    logger.info(
+                        "✅ 反爬已就绪：TLS/JA3/JA4 指纹池 %d 个版本 [%s]；"
+                        "直连用 %s，走代理时按代理确定性轮换",
+                        len(self._clients), "、".join(list(self._clients)[:6]),
+                        self.default_impersonate)
+                else:
+                    logger.warning("⚠️ 反爬未就绪：TLS 指纹池是空的，本次请求会**裸奔**")
 
     def _get_client_for_proxy(self, proxy: Optional[str]):
         """根据代理 URL 选择匹配的 TLS 指纹客户端"""
@@ -125,14 +188,33 @@ class ProtocolEngine:
         # [v2.17 E-P2] 身份捆绑注入：仅 identity_bundle 开启时挂 provider（默认关零影响）；
         # 0-3 纠偏后旧池在身份开启时已绕过——身份源独占（用户自填 cookies 优先级不变：
         # extra_headers 在下方合并，仍可覆盖）
-        try:
-            _provider = getattr(self, "identity_pool_provider", None)
-            if _provider is not None:
+        #
+        # [v6 M1-c 修复] 此处原为 `except Exception: pass`：注入失败会**静默退化成
+        # 无 cookie 请求**——登录墙的表现于是成了"页面内容不对"，而不是可读的登录态
+        # 错误，排查时几乎无法定位。现改为：记 ERROR + 失败计数，失败不再无声。
+        # **只记域、绝不记 URL**——查询串可能带签名参数（与工程脱敏纪律一致）。
+        _provider = self.identity_pool_provider
+        # [v6 M1-c] 页面级身份租约**优先于**打包池（前者是更具体的按站账号，
+        # 带健康分与额度记账）。两者都无则不加 Cookie——
+        # 未启用本特性时 cookie_leases 为空，此处行为与引入前**完全一致**。
+        _lease_ck = self._lease_cookie_for(url)
+        if _lease_ck and "cookie" not in {k.lower() for k in headers}:
+            headers["Cookie"] = _lease_ck
+        elif _provider is not None:
+            try:
                 _ck = _provider.cookies_for(url)
                 if _ck and "cookie" not in {k.lower() for k in headers}:
                     headers["Cookie"] = _ck
-        except Exception:
-            pass
+            except Exception as e:
+                self.identity_inject_failures += 1
+                try:
+                    _where = urlsplit(url).hostname or "<unknown>"
+                except Exception:
+                    _where = "<unknown>"
+                logger.error(
+                    f"身份注入失败：本次请求将**无 cookie** 发出（表现为「页面内容不对」"
+                    f"而非登录态错误）· 域={_where} · 累计={self.identity_inject_failures}"
+                    f" · 原因={e!r}", exc_info=True)
 
         # 合并额外传入的头（优先级最高）
         if extra_headers:
@@ -162,7 +244,7 @@ class ProtocolEngine:
         for attempt in range(self.max_retries + 1):
             try:
                 # 指数退避等待（非首次尝试）——[FIXED & MODIFIED] v2.10.6 D4 上限 8s（原 2+4+8+rand≈9s/页，
-                # 一批 10 页全挂卡 90s；作者激进风格收敛到 8s 内）
+                # 一批 10 页全挂卡 90s；机主激进风格收敛到 8s 内）
                 if attempt > 0:
                     backoff = min(self.retry_backoff_base * (2 ** attempt), 8.0) + random.uniform(0, 1)
                     logger.debug(f"Retry {attempt}/{self.max_retries} for {url}, waiting {backoff:.1f}s")
@@ -170,6 +252,15 @@ class ProtocolEngine:
 
                 # 使用 curl_cffi
                 client, tls_version = self._get_client_for_proxy(proxy)
+                # [v6 修复·机主要求「反爬要看得见的日志」] 每次请求说清**用的哪个指纹**，
+                # 但**按版本只报一次** —— 一次抓取几百个请求，逐条打会淹掉日志。
+                # 这样用户既看得到"反爬在生效"，又不会被刷屏。
+                if client is not None and not getattr(self, "_stealth_used", None):
+                    self._stealth_used: set = set()
+                if client is not None and tls_version not in self._stealth_used:
+                    self._stealth_used.add(tls_version)
+                    logger.info(f"反爬生效：本次请求使用 TLS 指纹 {tls_version}"
+                                + (f"（走代理 {proxy[:28]}…）" if proxy else "（直连）"))
                 if client:
                     # [v2.19 安全 P0] SSRF 闸：主抓取通道此前**无任何目标校验**且不校验
                     # 重定向落点（公开种子 302 到 169.254.169.254 即可抓内网/云元数据）。

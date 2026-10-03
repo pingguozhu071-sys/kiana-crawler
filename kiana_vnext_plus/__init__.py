@@ -1,2 +1,2 @@
-"""Kiana Vnext Plus (v2.19.6)"""
-__version__ = "2.19.8"
+"""Kiana Vnext Plus (v2.19.9)"""
+__version__ = "2.19.9"

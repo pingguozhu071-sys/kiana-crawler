@@ -442,7 +442,7 @@ class ExitManager:
                     continue
 
                 # [v2.16.1] 30s 预检：轮换窗口内的节点优先排除（用未过期节点——
-                # 即“到期前留出缓冲窗口”的通用做法）
+                # 通用做法：给过期判定留一段"提前量缓冲"，避免踩点换节点）
                 if node.rotation_due_at and node.rotation_due_at <= now + 30:
                     _expiring.append(node)
                     continue

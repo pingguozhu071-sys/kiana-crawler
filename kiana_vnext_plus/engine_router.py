@@ -4,6 +4,7 @@
 每级失败后自动升级到下一级，确保最终可到达目标。
 """
 import logging
+import re
 from .protocol_engine import ProtocolEngine
 from .solver_engine import SolverEngine
 from .session_pool import SessionPool
@@ -31,6 +32,9 @@ class EngineRouter:
         self.exit_mgr = exit_mgr
         self.challenge_wait = challenge_wait
         self._tls_fingerprint_idx = 0
+        # [v6 可观测性] 求解引擎抛异常的次数。此前这类异常被静默吞掉，
+        # "求解器崩了"与"求解器没给出可用响应"无法区分；留一个可读的计数。
+        self.solver_exceptions = 0
 
     async def fetch(self, url, domain, job) -> ResponseAdapter:
         """多级回退获取：protocol → stealth → TLS → solver → direct"""
@@ -152,9 +156,32 @@ class EngineRouter:
             # 求解引擎返回，检查是否仍需继续
             if status and status not in (403, 429, 503, 0):
                 logger.debug(f"[{self.FALLBACK_SOLVER}] 成功: {url} status={status}")
-                return ResponseAdapter(status, url, headers, raw_text=html)
-        except Exception:
-            pass
+                # [v6 修复·R6 根因 A **主路径**] 原来这里写的是 `url`（**请求 URL**），
+                # 而浏览器**真实落点**被求解器塞在 `headers["_final_url"]` 里
+                # （见 `solver_engine.py` 的 `render_simple` / `_do_solve`）—— **没人读**。
+                # 后果：`page_processor._final_url_of` 先读 `response.url` 就命中短链主机，
+                # 于是整页的相对链接都被按 `b23.tv` 解析 ⇒
+                # `links.internal` 里几十条 `https://b23.tv/video/BV...`。
+                #
+                # 而 B站**每个视频页骨架**都内联
+                # `<script src=".../risk-captcha-sdk/CaptchaLoader.js">`，
+                # `_needs_solver` 的裸子串 `"captcha"` 必然命中 ⇒ **B站每页都走这条 Tier-4**，
+                # 所以这个 bug 在 B站上是**必然**发生、不是偶发。
+                #
+                # `ResponseAdapter.url` 的语义本来就是"重定向链终点"（全工程只有
+                # `page_processor._final_url_of` 一个消费者），浏览器落点正是这个语义。
+                _final = str((headers or {}).get("_final_url") or url)
+                return ResponseAdapter(status, _final, headers, raw_text=html)
+        except Exception as e:
+            # [v6 修复] 原为 `except Exception: pass`——求解引擎抛异常（浏览器崩 / CDP 失联 /
+            # 超时）会被**无声吞掉**，调用方只看到 None，于是
+            # "**求解器崩了**"与"**求解器没给出可用响应**"变得无法区分。
+            # 而整条回退链存在的意义就是回答"这个站为什么失败"（M2 的结构探针与 trace
+            # 取证都是为它服务的）——这里是回退链上**最该留下线索**的一处。
+            self.solver_exceptions += 1
+            logger.warning(f"[{self.FALLBACK_SOLVER}] 求解异常，按无响应继续回退 "
+                           f"(已计 {self.solver_exceptions} 次): "
+                           f"{type(e).__name__}: {str(e)[:120]} | {url[:60]}")
         finally:
             await self.exit_mgr.release(proxy)
         return None
@@ -174,11 +201,54 @@ class EngineRouter:
         return resp
 
     def _needs_solver(self, resp: ResponseAdapter) -> bool:
-        """检测响应是否需要升级到下一级回退"""
+        """检测响应是否需要升级到下一级回退。
+
+        [v6 修复·R6 根因 A 的触发面 —— **真机实测出来的误报**]
+        原来判据里有个**裸子串 `"captcha"`**：
+        ```python
+        if any(kw in text.lower() for kw in ["cf-challenge","turnstile","datadome","captcha"])
+        ```
+        而 **B站每个视频页骨架**都内联
+        `<script defer src="https://s1.hdslb.com/bfs/seed/jinkela/risk-captcha-sdk/CaptchaLoader.js">`
+        ⇒ 裸子串必然命中 ⇒ **Tier1/2/3 已经拿到 200 完好正文，仍被踢到 Tier-4 浏览器层**。
+        真机插桩实测：
+        ```
+        [NEEDS-PROBE] status=200 url=https://www.bilibili.com/video/BV18sKG6KERy/ -> True 命中=['captcha']
+        ```
+        **代价有两层**：
+          · 性能 —— **每个 B站页面白起一次 Chromium**（一次跑一页就初始化 5 个浏览器上下文）；
+          · 正确性 —— Tier-4 正是 R6 基址丢失的入口，所以这个误报**必然**引出 R6。
+
+        **修法**（与本工程既有先例一致 —— `captcha_solver_extended` 里
+        "页面上出现过 geetest 字样但没有极验控件 ⇒ 判定为误报"）：
+        要求**真挑战信号**，不接受"整页里出现过某个词"：
+          · **强信号**照旧（都是厂商专有标识，基本不会出现在无关内容里）；
+          · 裸 `captcha` **降级**为"仅当它出现在**非脚本外链**的位置才算"——
+            先把 `<script src>` / `<link href>` 的取值抠掉再看，
+            这样 `CaptchaLoader.js` 这类**预加载**不再触发误报，
+            而真正的验证码表单/图片仍然命中。
+
+        ⚠️ `(403, 429, 503)` 与"不得含 400"是既有测试
+        （`test_v2196_review_fixes.py`）钉死的回退信号，**未动**。
+        """
         if resp.status_code in (403, 429, 503):
             return True
         text = resp._raw_text or ""
-        if any(kw in text.lower() for kw in ["cf-challenge", "turnstile", "datadome", "captcha"]):
+        if not text:
+            return False
+        low = text.lower()
+        # ① 强信号：厂商专有标识，不会因为"页面里提了一句"就误报
+        if any(kw in low for kw in ("cf-challenge", "cf_challenge", "cf-mitigated",
+                                    "turnstile", "datadome", "dd-key",
+                                    "g-recaptcha", "h-captcha", "hcaptcha",
+                                    "geetest_holder", "geetest_btn_click",
+                                    "nc_1_n1z", "px-captcha", "perimeterx")):
+            return True
+        # ② 弱信号 `captcha`：必须出现在**脚本/样式外链之外**。
+        #    先把 src/href 的取值抹掉再判 —— 这样预加载的
+        #    `.../risk-captcha-sdk/CaptchaLoader.js` 不再触发误报。
+        stripped = re.sub(r'(?:src|href)\s*=\s*["\'][^"\']*["\']', '""', low)
+        if "captcha" in stripped:
             return True
         return False
 

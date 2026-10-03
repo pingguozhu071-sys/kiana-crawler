@@ -304,7 +304,7 @@ KianaV9(FluentWindow)
     → 应用于 logp/datap/taskp 全部卡片 + home 三张统计卡
 ```
 
-**性能红线（v2.18.1 实测事故）**：引擎桥与页面构建**必须只在 `__init__` 执行一次**。曾因缩进事故把这段塞进 `_sig_place`，导致窗口每次 Show/Resize 都重建整个界面（单次 1.2s，事件循环停顿 7.6s）。`tools/gui_perf_probe.py` 是这条红线的回归门禁。
+**性能红线（v2.18.1 血泪）**：引擎桥与页面构建**必须只在 `__init__` 执行一次**。曾因缩进事故把这段塞进 `_sig_place`，导致窗口每次 Show/Resize 都重建整个界面（单次 1.2s，事件循环停顿 7.6s）。`tools/gui_perf_probe.py` 是这条红线的回归门禁。
 
 ---
 

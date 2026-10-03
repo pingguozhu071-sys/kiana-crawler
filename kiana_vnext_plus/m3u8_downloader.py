@@ -32,8 +32,15 @@ class M3U8Downloader:
 
     async def init_session(self):
         # [FIXED & MODIFIED] curl_cffi 替换 aiohttp（本机 aiohttp 外网全超时）
+        # [v6 补齐] 必须显式 impersonate —— 与 media_downloader / universal_downloader 同因。
+        # 这三处 `init_session` 是**同一段代码的三份拷贝**，v2.19.8 只修了那两处，
+        # **漏了这一份**：不传 impersonate 时 curl_cffi 落在"不模拟指纹"的默认档，
+        # 既慢（实测同 CDN 同代理 4.7-8.2 MB/s vs 带指纹 12-25 MB/s），
+        # 又与协议通道的 chrome136 指纹**不一致**——混用指纹本身就是可检测信号。
+        # m3u8 分片下载恰恰是防盗链/反爬盯得最紧的一条链。
         from curl_cffi.requests import AsyncSession
-        self.session = AsyncSession(timeout=120)
+        from .fingerprint_consistency import TLS_IMPERSONATE_POOL
+        self.session = AsyncSession(timeout=120, impersonate=TLS_IMPERSONATE_POOL[0])
 
     @staticmethod
     def _blocked(url) -> bool:
@@ -124,9 +131,21 @@ class M3U8Downloader:
             if key_info and HAS_CRYPTO:
                 key_url, iv = key_info
                 key = await self._fetch_bytes(key_url, headers)
-                if key:
-                    for i, seg_file in enumerate(sorted(temp_dir.glob("*.ts"))):
-                        await self._decrypt_file(seg_file, key, iv, i)
+                if not key:
+                    # [v2.19.9 修复] **绝不合并未解密的密文。**
+                    # 原来 `if key:` **没有 else** ⇒ 取不到密钥也照走 `_merge_segments` 并
+                    # `return True` ⇒ 产物是 AES 密文拼接块（**完全放不了**），而调用方的
+                    # 三道判据（>1MB / 后缀 .mp4 / 头 256 字节非 HTML）**密文全过**
+                    # ⇒ 记 completed 并带一个"看起来合理"的 file_size。
+                    # 这正是本工程最忌的**假成功**：宁可如实失败，也不要一个放不了的 .mp4。
+                    # 触发面是**现实路径**：密钥 403 / 超时 / 异常 —— `_fetch_bytes` 会把它们
+                    # 全部吞成 `b""`。
+                    logger.error(
+                        f"m3u8 声明 AES-128 但密钥取不到（{str(key_url)[:60]}）——"
+                        f"拒绝合并未解密的密文：本次如实记失败，不产出放不了的 .mp4")
+                    return False
+                for i, seg_file in enumerate(sorted(temp_dir.glob("*.ts"))):
+                    await self._decrypt_file(seg_file, key, iv, i)
 
             await self._merge_segments(temp_dir, output_path)
             return True
@@ -209,10 +228,19 @@ class M3U8Downloader:
         for i, line in enumerate(lines):
             if line.startswith('#EXT-X-STREAM-INF'):
                 bw = 0
-                for attr in line.split(',')[1:]:
-                    if attr.startswith('BANDWIDTH='):
+                # [v2.19.9 修复·**孪生处漏**] 原来写的是 `line.split(',')[1:]` ——
+                # 标签前缀 `#EXT-X-STREAM-INF:` **没有被先切掉** ⇒ **第一个属性被整体丢掉**，
+                # 而真实 master 播放列表里 `BANDWIDTH=` 几乎总是第一个属性 ⇒ `bw` 恒为 0
+                # ⇒ `if bw > best_bw` 永不成立 ⇒ `best_url` 永远是 None ⇒
+                # **整条 master 播放列表兜底从来下不动**（直接返回 ""）。
+                # 同一个 bug 在 `#EXT-X-KEY` 处**已经修过**（见 :188-190 的修复注释），
+                # 这里是它的孪生位置 —— 本工程最稳定的那类「一处修、另一处漏」。
+                # 修法与上面**同源**：先按 ':' 切掉标签前缀，再按 ',' 拆属性。
+                _attrs_txt = line.split(':', 1)[1] if ':' in line else ''
+                for attr in _attrs_txt.split(','):
+                    if attr.strip().startswith('BANDWIDTH='):
                         # 修复：使用 split('=', 1) 防止截断
-                        parts = attr.split('=', 1)
+                        parts = attr.strip().split('=', 1)
                         if len(parts) == 2:
                             bw = int(parts[1])
                 # 修复：检查 i+1 是否越界
@@ -285,8 +313,27 @@ class M3U8Downloader:
             for ts in sorted(temp_dir.glob("*.ts")):
                 f.write(f"file '{ts.absolute()}'\n")
 
-        # GPU 加速合并：自动检测可用编码器并选择最佳方案
-        # 优先级：NVENC > QuickSync > AMF > CPU copy
+        # [v2.19.9 修复·**零转码红线**] 原来这两条路的**顺序是反的**：先跑 GPU **重编码**
+        # （`-c:v h264_nvenc -preset p6 -b:v 5M`），只有它失败才退回 `-c copy`。两个后果都实：
+        #   ① `concat` 合并**本来不需要编码** —— `-c copy` 是流拷贝（I/O 级、几秒完），
+        #      而重编码要先解码再编码，**反而更慢**："GPU 加速"在这里是个误解；
+        #   ② 它会**静默把画质压到 5 Mbps**，与工程自己写明的「零转码红线」直接冲突
+        #      （见 universal_downloader 与 docs/工程全景介绍-对外评审版.md）。
+        # 现改为**只调换顺序**（不增不减任何能力）：主路径一律 `-c copy` 无损拷贝，
+        # 只有它失败时才动用重编码兜底 —— 并把"这是有损兜底"明确说出来，不静默。
+        cmd_copy = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(filelist),
+                    "-c", "copy", str(output_path)]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd_copy, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            return
+        logger.warning(
+            f"FFmpeg 流拷贝合并失败（分片参数不一致时才会走到）—— 改用**重编码兜底**，"
+            f"本次产物**有损**、与零转码红线相违: {stderr.decode(errors='replace')[:200]}")
+
+        # GPU 加速合并（**现在只是兜底**，不再是主路径）：自动检测可用编码器
+        # 优先级：NVENC > QuickSync > AMF（CPU copy = 上面的主路径）
         # [FIXED & MODIFIED] v2.14 编码器探测结果缓存（原每次合并都跑 ffmpeg -encoders
         # 子进程，同步阻塞事件循环最坏 10s → 进程级只探测一次 + 挪线程池）
         if self.gpu_acceleration:
@@ -295,24 +342,16 @@ class M3U8Downloader:
                 cmd = ["ffmpeg", "-y", "-hwaccel", encoder["hwaccel"], "-f", "concat",
                        "-safe", "0", "-i", str(filelist), "-c:v", encoder["codec"],
                        "-preset", "p6", "-b:v", "5M", str(output_path)]
-                proc = await asyncio.create_subprocess_exec(
+                proc_gpu = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                _, stderr = await proc.communicate()
-                if proc.returncode == 0:
+                _, stderr_gpu = await proc_gpu.communicate()
+                if proc_gpu.returncode == 0:
                     return
                 logger.warning(
-                    f"FFmpeg GPU merge ({encoder['name']}) failed, "
-                    f"falling back to software copy: {stderr.decode()[:200]}"
-                )
+                    f"FFmpeg GPU 合并 ({encoder['name']}) failed: "
+                    f"{stderr_gpu.decode(errors='replace')[:200]}")
 
-        # 软件 CPU 合并（核心功能保留：适配消费级设备）
-        cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(filelist),
-               "-c", "copy", str(output_path)]
-        proc2 = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        _, stderr2 = await proc2.communicate()
-        if proc2.returncode != 0:
-            raise RuntimeError(f"M3U8 merge failed: {stderr2.decode()[:500]}")
+        raise RuntimeError(f"M3U8 merge failed: {stderr.decode()[:500]}")
 
     @staticmethod
     def _detect_gpu_encoder():

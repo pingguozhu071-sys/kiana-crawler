@@ -1,4 +1,4 @@
-# kiana-crawler 技术白皮书（v2.19.8）
+# kiana-crawler 技术白皮书（v2.19.9）
 
 **Windows 单机网页采集引擎的设计与实现**
 

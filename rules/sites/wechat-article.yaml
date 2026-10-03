@@ -1,0 +1,39 @@
+# 微信公众号文章（mp.weixin.qq.com）
+#
+# [v2.19.8 M2-e 实测取证] 2026-10-03 用 `tools/capture_sample.py` 抓真实页面：
+#   https://mp.weixin.qq.com/s/LOIkTrBj-H5xeXxWEJfnsw
+#   样本：tests/assets/wechat_article_sample.html
+#
+# ⚠️ **样本裁过**（原始 3.75M 字符 → 181K）：
+#   原始页 **99% 是 `<script>` 块**（3.74M/3.75M）。只删了 `<script>`/`<style>`，
+#   **DOM 结构一字未动** —— 选择器依赖的是内容结构，删脚本不影响。
+#   裁剪后复验：`h1#activity-name` 与 `div#js_content` **都还在**。
+#
+# **选择器是量出来的**（在样本上逐个核对）：
+#   · 标题 `h1#activity-name` → '刘妍  马晓英 等 | 文化理解与传承素养：…' ✅
+#   · 正文 `div#js_content`  → 25,605 字                                  ✅
+#
+# **两条与 `parser.py` 里记录的真机发现一致**（本规则把它钉住）：
+#   1. **标题不在 `<title>` 里** —— 公众号的 `<title>` 基本是空的，
+#      标题由 JS 写进 `h1#activity-name`。**只读 `<title>` 会拿到空标题。**
+#   2. **正文图片全是懒加载** —— 实测 `div#js_content` 里 10 张图，
+#      **10 张全带 `data-src`**、`src` 是占位。**只读 `src` 一张都拿不到。**
+#      所以 media.images 同时给 `data-src` 与 `src`，让上层按序取。
+name: wechat-article
+match: [mp.weixin.qq.com]
+# ⚠️ 排除项用**朴素子串**，不要写带 `?` / `\` 的正则 ——
+# YAML 流式序列里那些字符会直接解析失败（我第一次就栽在这：
+# `exclude: [/s\?__biz=.*action=home/]` → "expected ',' or ']', but got '?'"）。
+exclude: [/profile, /cgi-bin, /mp/]
+item_type: article
+
+detail:
+  fields:
+    # 公众号 `<title>` 常为空 → 主选 `h1#activity-name`，`<title>` 仅兜底
+    title: {sel: "h1#activity-name, h1.rich_media_title, h1", text: true}
+    author: {sel: "#js_name, .rich_media_meta_nickname, .rich_media_meta_text", text: true}
+    content: {sel: "div#js_content, .rich_media_content", text: true}
+
+media:
+  # `data-src` 在前：公众号图片**全是懒加载**，`src` 是占位图
+  images: {sel: "div#js_content img, .rich_media_content img", attr: data-src}

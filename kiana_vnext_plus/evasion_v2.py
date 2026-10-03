@@ -7,16 +7,61 @@ WEBRTC_LEAK_PREVENT = """
     const origRTCPeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
     if(origRTCPeerConnection){
         const blockIP = (conn) => {
+            // [v6] 擦除规则**只写一份**：SDP 路径与候选事件路径共用它。
+            // 两条路径各写一份正则，迟早会"擦一半留一半"（判据不一致）。
+            const scrub = (s) => s.replace(/(\\d{1,3}\\.){3}\\d{1,3}/g, '0.0.0.0')
+                                 .replace(/[0-9a-f]{1,4}(:[0-9a-f]{1,4}){7}/gi, '::1');
             const origCreateOffer = conn.createOffer.bind(conn);
             conn.createOffer = function(...args){
                 return origCreateOffer(...args).then(desc => {
                     if(desc && desc.sdp){
-                        desc.sdp = desc.sdp.replace(/(\\d{1,3}\\.){3}\\d{1,3}/g, '0.0.0.0');
-                        desc.sdp = desc.sdp.replace(/[0-9a-f]{1,4}(:[0-9a-f]{1,4}){7}/gi, '::1');
+                        desc.sdp = scrub(desc.sdp);
                     }
                     return desc;
                 });
             };
+            // [v6 修复] **候选事件路径同样要擦**。
+            // 上面只擦了 createOffer 的 SDP —— 但 ICE 候选也会通过 onicecandidate
+            // 逐条送给页面，`event.candidate.candidate` 里就带着真实地址。
+            // 只擦一边 = "看起来有防护、实际有"（本工程最贵的一类）。
+            // RTCIceCandidate 字段**只读**，故这里**替换事件对象**而非改写它：
+            // Object.create(ev) 保住原型链（instanceof 仍成立）；
+            // 任何异常一律回退原始事件——宁可不擦，也不能把 WebRTC 弄坏。
+            // （擦除规则 `scrub` 已在函数开头定义，两条路径共用——**不要在这里再定义一次**，
+            //   同作用域重复 `const` 是语法错误，会让整个 IIFE 直接失效。）
+            try {
+                const d = Object.getOwnPropertyDescriptor(origRTCPeerConnection.prototype, 'onicecandidate');
+                if (d && d.set) {
+                    let cb = null;
+                    Object.defineProperty(conn, 'onicecandidate', {
+                        configurable: true,
+                        get: () => cb,
+                        set: (fn) => {
+                            cb = fn;
+                            d.set.call(conn, (ev) => {
+                                try {
+                                    const c = ev && ev.candidate && ev.candidate.candidate;
+                                    if (typeof c === 'string' && scrub(c) !== c
+                                        && typeof RTCIceCandidate === 'function') {
+                                        const nc = new RTCIceCandidate({
+                                            candidate: scrub(c),
+                                            sdpMid: ev.candidate.sdpMid,
+                                            sdpMLineIndex: ev.candidate.sdpMLineIndex,
+                                            usernameFragment: ev.candidate.usernameFragment,
+                                        });
+                                        const ev2 = Object.create(ev);
+                                        Object.defineProperty(ev2, 'candidate',
+                                            { value: nc, enumerable: true });
+                                        if (cb) cb(ev2);
+                                        return;
+                                    }
+                                } catch (e) { /* 回退原始事件 */ }
+                                if (cb) cb(ev);
+                            });
+                        },
+                    });
+                }
+            } catch (e) { /* 拿不到描述符就不加这层，保持原行为 */ }
         };
         window.RTCPeerConnection = function(...args){
             const conn = new origRTCPeerConnection(...args);
@@ -128,26 +173,35 @@ CDP_EVASION_INJECT = """
 // Disable automation detection via CDP
 (function(){
     // Remove webdriver flag
-    Object.defineProperty(navigator, 'webdriver', {get: () => undefined, configurable: true});
+    Object.defineProperty(navigator, 'webdriver', {get: () => false, configurable: true});
     // Remove chrome runtime
     if(window.chrome && window.chrome.runtime){
         window.chrome.runtime = undefined;
     }
-    // Fake plugins
-    Object.defineProperty(navigator, 'plugins', {
-        get: () => {
-            const plugins = [
-                {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
-                {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
-                {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
-            ];
-            plugins.item = (i) => plugins[i] || null;
-            plugins.namedItem = (n) => plugins.find(p => p.name === n) || null;
-            plugins.refresh = () => {};
-            Object.defineProperty(plugins, 'length', {value: plugins.length});
-            return plugins;
-        }
-    });
+    // Fake plugins —— [v6 修复] **只在"报 0 / 缺失"时才伪造**。
+    // 原实现**无条件**用 3 项**普通数组**覆盖 navigator.plugins，而本脚本是
+    // `add_init_script` 里排在 injection_scripts 之后的（solver_engine 先注入 55 维链、
+    // 再注入 evasion_v2），于是它会把前者刚装好的完整 PluginArray 又换回"一眼假"的普通数组：
+    //   · `navigator.plugins instanceof PluginArray` → false
+    //   · length/item/namedItem/refresh 全成了**实例自有**属性（真接口在原型上）
+    //   · 它**不碰 mimeTypes**，plugins=3 与 mimeTypes=2 的数量对应关系也就错了
+    // 加守卫后：正常报数的浏览器一律不动；只有真报 0 的环境才由这里兜底。
+    if (!navigator.plugins || navigator.plugins.length === 0) {
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => {
+                const plugins = [
+                    {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+                    {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
+                    {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
+                ];
+                plugins.item = (i) => plugins[i] || null;
+                plugins.namedItem = (n) => plugins.find(p => p.name === n) || null;
+                plugins.refresh = () => {};
+                Object.defineProperty(plugins, 'length', {value: plugins.length});
+                return plugins;
+            }
+        });
+    }
     // Permissions API spoof
     if(navigator.permissions && navigator.permissions.query){
         const origQuery = navigator.permissions.query.bind(navigator.permissions);

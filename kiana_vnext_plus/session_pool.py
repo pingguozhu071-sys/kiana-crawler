@@ -4,7 +4,7 @@
   - get_session(url) -> dict            （旧协议引擎用）
   - update_session(url, cookies, headers)（旧协议引擎/求解引擎用）
   - get_stealth_headers(url) / get_tls_profile(idx)（引擎路由回退层级用）
-  - get(domain) -> Session               （按域取会话的新接口）
+  - get(domain) -> Session               （Crawlee 风格新接口）
   - mark_blocked / cleanup_expired / invalidate
 """
 import time
@@ -14,7 +14,6 @@ import hashlib
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List
-from urllib.parse import urlparse
 
 from .header_generator import random_ua
 
@@ -68,9 +67,16 @@ class SessionPool:
 
     @staticmethod
     def _domain_of(url: str) -> str:
-        return urlparse(url if "://" in url else f"https://{url}").netloc.lower()
+        """[v6 修复] 改为委托 `url_utils.extract_domain`（**域名提取的唯一实现**）。
 
-    # ── 新接口：按域取会话 ──────────────────────────────
+        原实现与 `extract_domain` 几乎一致，**只差异常处理**：它对畸形 URL
+        （如 `https://[`）会**抛 ValueError**，而 `extract_domain` 不会。
+        同一能力的第三份拷贝，故一并收口。
+        """
+        from .url_utils import extract_domain
+        return extract_domain(url)
+
+    # ── 新接口：Crawlee 风格 ────────────────────────────
     def get(self, domain: str) -> Session:
         """获取/创建会话（轮转策略：优先未过期未封禁且使用最少者）"""
         domain = self._domain_of(domain)

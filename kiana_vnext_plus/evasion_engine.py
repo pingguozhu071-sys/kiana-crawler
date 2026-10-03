@@ -170,7 +170,7 @@ def build_evasion_scripts(fp: dict) -> str:
                             '__selenium_unwrapped', '__fxdriver_unwrapped']) {{
             try {{
                 Object.defineProperty(navigator, prop, {{
-                    get: () => undefined, configurable: true, enumerable: false
+                    get: () => false, configurable: true, enumerable: false
                 }});
             }} catch(e) {{}}
         }}
@@ -178,7 +178,7 @@ def build_evasion_scripts(fp: dict) -> str:
         // 清除 document 上的自动化属性
         try {{
             Object.defineProperty(document, '$cdc_asdjflasutopfhvcZLmcfl_', {{
-                get: () => undefined, configurable: true
+                get: () => false, configurable: true
             }});
         }} catch(e) {{}}
 
@@ -695,7 +695,7 @@ def build_evasion_scripts(fp: dict) -> str:
                         // 确保 iframe 内的 navigator.webdriver 也被清除
                         try {{
                             Object.defineProperty(win.navigator, 'webdriver', {{
-                                get: () => undefined, configurable: true
+                                get: () => false, configurable: true
                             }});
                         }} catch(e) {{}}
                     }}

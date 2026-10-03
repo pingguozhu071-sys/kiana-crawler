@@ -10,7 +10,7 @@ import asyncio
 import time
 import random
 from collections import defaultdict
-from urllib.parse import urlparse
+
 
 
 class TokenBucket:
@@ -55,15 +55,20 @@ class RateLimiter:
 
     @staticmethod
     def _domain_of(url: str) -> str:
-        try:
-            return urlparse(url if "://" in url else f"https://{url}").netloc.lower()
-        except Exception:
-            return "unknown"
+        """[v6 修复] 改为委托 `url_utils.extract_domain`（**域名提取的唯一实现**）。
+
+        此前本函数与 `session_pool._domain_of`、`url_utils.extract_domain` 是**三份**，
+        且真实输入上结论不一致：裸域名 `example.com` 在本处得到 `example.com`，
+        而 `extract_domain`（frontier 用它存 `domain` 列）得到**空串**——
+        于是限流桶与 frontier 的域名桶**对不上**。现统一。
+        """
+        from .url_utils import extract_domain
+        return extract_domain(url)
 
     async def acquire(self, url: str, tokens: int = 1):
         """获取发送许可：全局桶 + 域名桶 + 退避等待
 
-        [FIXED & MODIFIED] v2.13 归还语义（令牌“退还—重扣”必须成对且原子）：
+        [FIXED & MODIFIED] v2.13 归还语义（学 Jormungandr rate_limiter.py:70-73 的正确性细节）：
         原实现先扣全局再扣域名，域名桶不足时全局令牌已被消耗却不退回——高并发下
         全局令牌被"占着等域名"的请求白白吃掉。现改为：域名桶需要等待时，把全局令牌
         归还后再 sleep。

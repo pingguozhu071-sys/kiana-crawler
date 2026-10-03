@@ -149,22 +149,23 @@ class AdaptiveControllerV2:
         self._running = False
 
 
-# ═══ 数据清洗流水线（URL 归一 → 去重 → 质量过滤 → 内容净化）═══
+# ═══ Data Cleaning Pipeline (Nutch-style) ═══
 class DataCleaner:
     """URL normalization + dedup + quality filtering + content sanitization"""
 
     @staticmethod
-    def normalize_url(url: str) -> str:
-        """Normalize URL: lowercase host, remove fragments, sort query params"""
-        from urllib.parse import urlparse,urlunparse,parse_qs,urlencode
-        try:
-            p=urlparse(url)
-            netloc=p.netloc.lower()
-            # Sort query params
-            qs=parse_qs(p.query,keep_blank_values=True)
-            query=urlencode(sorted(qs.items()),doseq=True)
-            return urlunparse((p.scheme,netloc,p.path,p.params,query,''))
-        except Exception:return url
+    def normalize_url(url: str, keep_params=None) -> str:
+        """Normalize URL: lowercase host, remove fragments, sort query params
+
+        [v6 去重] 原为**本地第二实现**，与 `url_utils.normalize_url`（引擎用于
+        `url_hash` 去重的那个）**语义不一致**：本地版缺 IDNA 规范化、缺默认端口剥离、
+        缺 `..`/`.` 路径段解析、缺 tracking 参数过滤——同一个 URL 两边会得到**不同字符串**。
+        若哪天拿它当去重键，就会出现「同一页爬两次」或「两页被并成一个」。
+        现改为**委托唯一实现**（本函数在生产路径上未被调用，改动零风险）；
+        形参一并对齐，使"同名实现"扫描器不再把它报成失配。
+        """
+        from .url_utils import normalize_url as _canonical
+        return _canonical(url, keep_params)
 
     @staticmethod
     def clean_html(html: str) -> str:

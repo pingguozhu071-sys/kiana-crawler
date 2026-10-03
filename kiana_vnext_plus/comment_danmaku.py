@@ -44,18 +44,17 @@ def _bili_cookies() -> dict:
         default = pathlib.Path(os.environ.get("LOCALAPPDATA", "")) / "KianaVnextPlus" / "cookies.txt"
         if default.exists():
             srcs = [str(default)]
+    # [v6] 域过滤保留在本处；行解析归 cookie_utils.parse_netscape_cookies（含 #HttpOnly_ 数据行）
+    from .cookie_utils import parse_netscape_cookies
     for kf in srcs:
         p = pathlib.Path(kf)
         if not p.exists():
             continue
         try:
-            for line in p.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    continue
-                parts = s.split("\t")
-                if len(parts) >= 7 and "bilibili" in (parts[0] or "").lower():
-                    jar[parts[5]] = parts[6]
+            text = p.read_text(encoding="utf-8-sig", errors="ignore")
+            for c in parse_netscape_cookies(text):
+                if "bilibili" in str(c["domain"] or "").lower():
+                    jar[str(c["name"])] = c["value"]
         except Exception:
             continue
     return jar
@@ -106,7 +105,7 @@ async def _wbi_keys(session) -> tuple:
 async def fetch_bili_replies(session, aid, root_comment_id, headers, cookies,
                              mixin, max_pages: int = 2) -> list:
     """[v2.16.1] 某条主评论下的二级回复（x/v2/reply/reply，parent=root；逐页）。
-    双级骨架（主楼分页 → 楼中楼按需展开），接口与实现为本工程重写：
+    通用做法：两级评论按"逐页取 + 单条失败只断该条、不断整链"组织：
     单条主评论的子评论失败只断该条、不断整链。返回 [{"root_id", "uname", "message", "like", "ctime"}]"""
     out = []
     for pn in range(1, max_pages + 1):
@@ -137,19 +136,42 @@ async def fetch_bili_replies(session, aid, root_comment_id, headers, cookies,
 
 def danmaku_to_ass(xml_text: str, width: int = 1920, height: int = 1080):
     """[v2.16.1] 弹幕 XML → ASS 字幕（可选依赖 biliass——未安装返回 None 并日志，
-    主流程不受影响。danmaku2ass 的用法为公开惯例，仅学模式）。"""
+    主流程不受影响。参考 bilili 的 danmaku2ass 用法，仅学模式）。"""
     try:
         import biliass  # 可选依赖：缺则降级
     except ImportError:
         logger.info("biliass 未安装——跳过弹幕 ASS 转换（弹幕 XML 数据仍保留）")
         return None
     try:
-        conv = biliass.Danmaku2ASS(
-            input_str=xml_text, input_type="xml", output_format="ass",
-            width=width, height=height)
+        # [v6 修复·真机实测] **兼容两代 API** —— 这是"装上新版反而更糟"的典型：
+        #   · biliass ≥2.x：`convert_to_ass(inputs, stage_width, stage_height, input_format=…)`
+        #     **直接返回 ASS 字符串**；
+        #   · biliass 1.x ：`Danmaku2ASS(input_str=…, input_type=…, width=…, height=…)`
+        #     返回 dict（取 `output_str`）。
+        # 原来只写死旧版调用 —— 装上 2.x 后 `import` **会成功**、调用**必抛**，
+        # 而异常被下面的 `except` 吞掉 ⇒ **连"未安装"那句提示都没了，变成纯静默失败**：
+        # 用户看到的是"弹幕 ASS 莫名其妙没了"，且毫无线索。
+        if hasattr(biliass, "convert_to_ass"):
+            return (biliass.convert_to_ass(xml_text, stage_width=width,
+                                           stage_height=height,
+                                           input_format="xml") or "").strip() or None
+        # ⚠️ 用 `getattr` 取旧版入口而不是 `biliass.Danmaku2ASS(...)`：
+        # 装的是 2.x 时**该属性根本不存在**，直接写会被 mypy 判 `attr-defined` 报错
+        # （实测：写成属性访问后 mypy 从 99 涨到 100）。用 getattr 探测既兼容两代、
+        # 又不在类型层面断言一个可能不存在的属性。
+        _legacy = getattr(biliass, "Danmaku2ASS", None)
+        if _legacy is None:
+            logger.warning("biliass 既没有 convert_to_ass 也没有 Danmaku2ASS —— "
+                           "版本不认识，跳过弹幕 ASS 转换")
+            return None
+        conv = _legacy(input_str=xml_text, input_type="xml", output_format="ass",
+                       width=width, height=height)
         return (conv.get("output_str") or "").strip() or None
     except Exception as e:
-        logger.debug(f"弹幕 ASS 转换失败: {e}")
+        # **不许静默**：上游改 API 时必须看得见（原来这条是 `logger.debug`，
+        # 默认级别下根本不会出现，等于把问题藏起来）。
+        logger.warning(f"弹幕 ASS 转换失败（biliass 版本/API 可能变了）: "
+                       f"{type(e).__name__}: {e}")
         return None
 
 

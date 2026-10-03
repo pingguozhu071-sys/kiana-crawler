@@ -607,7 +607,7 @@ class TestFingerprintFreshness:
 
 
 class TestFingerprintConsistencyAssets:
-    """[v2.17 E-P1-6] 浏览器一致性资产（纯 Python 部分）：屏幕/任务栏/窗口 clamp"""
+    """[v2.17 E-P1-6] Camoufox 一致性资产（纯 Python/MIT 部分）：屏幕/任务栏/窗口 clamp"""
 
     def test_clamp_bounds(self):
         from kiana_vnext_plus.fingerprint_consistency import clamp_screen_and_window

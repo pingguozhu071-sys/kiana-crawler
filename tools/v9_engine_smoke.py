@@ -1,5 +1,21 @@
-"""v9 引擎桥真爬验收：移屏外跑 1 页真实爬取，断言日志回传/统计卡跳动/停止语义"""
+"""v9 引擎桥真爬验收：移屏外跑 1 页真实爬取，断言日志回传/统计卡跳动/停止语义
+
+[v2.19.9] 加**默认隔离**：本脚本原先靠 `move(-2600,-1600)` 只躲开了**视线**。
+它的链路会真投机主数据 —— `start_btn.click()` → `_start()` → `save_config()`
+写真 `launcher_config.json`，再 → `EngineBridge.start()` → 真 `http_cache/`，
+而且 Cookies 框里灌的是从真配置读来的 `cookie_file`。
+现在默认把数据根重定向到临时目录（`LOCALAPPDATA`，导入期/调用期两个钩子一起改），
+跑完即删；要对真机跑请显式加 `--real`。
+"""
+from pathlib import Path
 import sys, os, tempfile, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ⚠️ 必须在 import launcher_v9 **之前**激活（见 _tools_isolation 的模块说明）
+from _tools_isolation import activate  # noqa: E402
+
+activate("v9_engine_smoke")
+
 _trace_path = os.path.join(os.environ.get("TEMP", "."), "v9_engine_trace.txt")
 _t0 = [time.time()]
 
@@ -103,8 +119,7 @@ def finish():
     }
     # print 会被引擎线程的 stdout 重定向吞掉 → 结论写文件（print 保留给交互调试）
     try:
-        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                               "tests", "assets", "v9_engine_result.txt"),
+        with open(str(Path(__file__).resolve().parent.parent / "tests" / "assets" / "v9_engine_result.txt"),
                   "w", encoding="utf-8") as f:
             f.write(f"STATE: {state}\nCHECKS: {checks}\n"
                     f"ENGINE_SMOKE: {'PASS' if all(checks.values()) else 'FAIL'}\n"

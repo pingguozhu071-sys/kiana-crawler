@@ -1,0 +1,31 @@
+# 什么值得买 社区文章页（post.smzdm.com）
+#
+# [v2.19.8 M2-e 实测取证] 2026-10-03 用 `tools/capture_sample.py` 抓真实页面：
+#   https://post.smzdm.com/p/apqmlo27/
+#   样本：tests/assets/smzdm_post_sample_sample.html（真实渲染，已脱敏）
+#
+# **选择器是量出来的，不是猜的** —— 在样本上逐个核对：
+#   · 标题   `h1.item-name`        → '高速充电充至80%被迫离场引热议…' ✅
+#   · 作者   `.author-name`        → '快科技'                        ✅
+#   · 正文   `.m-contant`          → 1105 字 + 15 图                  ✅
+#     ⚠️ **`.m-contant` 是站方自己的拼写**（content 写成了 contant）——
+#        **不要"顺手改成 `.m-contant`"**，那样会一条都匹配不到。
+#   · 反例（**刻意不选**，记录在此避免后人重踩）：
+#       `#content`        13948 字 / 248 图 —— 是**整页**，连导航和评论都进来了
+#       `.wrap-article`   是**相关推荐**（"更多精彩文章"），不是正文
+#
+# 正文末尾会带一段作者简介（"快科技（原驱动之家）是…"），
+# 属页面正常内容，不做额外裁剪——**裁剪会让选择器失真**。
+name: smzdm-post
+match: [post.smzdm.com]
+exclude: [/favorites/, /comment/, /search/]
+item_type: article
+
+detail:
+  fields:
+    title: {sel: "h1.item-name, h1", text: true}
+    author: {sel: ".author-name, [class*=author-name]", text: true}
+    content: {sel: ".m-contant", text: true}
+
+media:
+  images: {sel: ".m-contant img, article img", attr: src}

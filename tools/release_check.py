@@ -3,7 +3,7 @@
 
 用途：发版前一次性跑遍"核发版清单"的各方面——版本一致性、Git 卫生、全量测试、
 静态检查、依赖审计、密钥泄漏扫描、规则/资产完整性、验证线、构建面自检。
-不替代独立的结构化安全扫描（发版前仍须单独跑）。
+不替代 Mimosa 深扫（发版前仍须单独跑，见安全审计记录）。
 
 用法：
   python tools/release_check.py                 # 全部门禁（含 2 分钟级全量测试）
@@ -17,17 +17,29 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# [v2.19.9 修复] **门禁自己会在默认环境下崩。** 中文 Windows 的 stdout 是 GBK(cp936)，
+# 而本脚本最后要 `print("✅ …")` ⇒ `UnicodeEncodeError: 'gbk' codec can't encode '\u2705'`；
+# 更糟的是它崩在**所有检查都跑完之后**的汇总打印上 ⇒ 使用者只看到 traceback、看不到结论
+# （真机实测：不带 PYTHONIOENCODING 跑 `--skip-network`，14 项全跑完，然后崩在汇总那一行）。
+# 同一个坑已在 `sync_doc_counts.py` / `privacy_scanner.py` 修过，那里的注释写着
+# 「以前靠调用方记得设 PYTHONIOENCODING=utf-8 绕过 —— 与『默认就能用』相悖」
+# —— **门禁本人被漏掉了**。这里照同一套办：脚本内 reconfigure，不依赖调用方。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 ROOT = Path(__file__).resolve().parent.parent
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 
 _LICENSES = ("MIT", "Apache-2.0", "BSD", "GPL", "MPL")
 # 扫描豁免目录（密钥扫描与凭据卫生共用；tests/tools 内产物不入分发面）
-ex_dirs = {".git", ".tmp_test_projects", "__pycache__",
+ex_dirs = {".git", ".tmp_test_projects", "signature_extracts", "__pycache__",
            "tests", "tools", "downloader", "installer", "Docs"}
 _KEY_PATTERNS = [
     (r"sk-[A-Za-z0-9]{16,}", "openai/stripe 式 API key"),
@@ -38,10 +50,19 @@ _KEY_PATTERNS = [
 
 
 def _run(cmd, timeout=900, cwd=ROOT):
+    # [v2.19.9 修复] **子进程也必须说 UTF-8。** 这里本来就按 `encoding="utf-8"` 解码，
+    # 却**从没告诉过子进程要写 UTF-8** ⇒ 中文 Windows 上子进程（Python）看到管道，
+    # stdout 落到 GBK(cp936)，一句 `print("✅ …")` 就 `UnicodeEncodeError` 崩掉。
+    # 真机实测（**不设** PYTHONIOENCODING 直接跑门禁）：**7/14 FAIL，其中 6 项是这个原因** ——
+    # 规则资产 / verify_all / 结构指纹 / 静默失败 / 脱敏链路 / 多份实现，全是"检查本身没跑起来"，
+    # **看起来像工程坏了**。也就是说：门禁是否可信，一直取决于**调用方记得设环境变量**，
+    # 与工程「默认就能用」的口径相悖（同一个坑已在 sync_doc_counts / privacy_scanner 内部修过）。
+    # 修在**唯一**的 spawn 口 —— 全门禁的子进程都走 `_run`，一条解决全部。
+    _env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
                            timeout=timeout, cwd=str(cwd), encoding="utf-8",
-                           errors="ignore")
+                           errors="ignore", env=_env)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except Exception as e:
         return -1, str(e)
@@ -144,10 +165,40 @@ def check_static():
     # 约 100 个静态错误（P2-13 的 F821 未定义名 `DomainState` 正是被该余量放过的）。
     # 现改为**锁定当前实测值并禁止回升**：任何新增静态错误都会让门禁 FAIL。
     # 后续每清理一批可再下调（只降不升）。
-    RUFF_MAX, MYPY_MAX = 84, 104
+    # [v6 收紧] 原为 84/104，而实测已降到 81/103 —— **那 3/1 的余量就是新的隐性容忍**：
+    # 84 的上限意味着"再加 3 个静态错误门禁也不会响"，等于重演 P2-13 那个被余量放过的洞。
+    # 现按实测值锁死（本轮清理了两处 unused import，另有一处改动使其自然下降）。
+    RUFF_MAX, MYPY_MAX = 80, 99
+# [v6] mypy 上限 103 → **99**：本轮修 `_ensure_cookie_file` 的返回标注
+# （`-> pathlib.Path` 其实到处 `return None`）时**顺带消掉 2 个既有报错**。
+# 基线**只许降不许升** —— 降了就当场收紧，否则下次会悄悄涨回去。
     if ruff_n <= RUFF_MAX and mypy_n <= MYPY_MAX:
-        return PASS, f"ruff={ruff_n} mypy={mypy_n}（已锁死 ≤{RUFF_MAX}/≤{MYPY_MAX}，禁止回升）", list(findings)
-    return FAIL, f"静态超基线 ruff={ruff_n} mypy={mypy_n}（锁死 ≤{RUFF_MAX}/≤{MYPY_MAX}）", list(findings)
+        ok_main = True
+    else:
+        ok_main = False
+
+    # ════════════════════════════════════════════════════════════════
+    # [v6 补齐] 把 `tools/` 与 `tests/` 纳入**正确性**检查（只跑 pyflakes 的 F 类）。
+    #
+    #   此前静态检查只覆盖 `kiana_vnext_plus` —— 于是**本会话新增的 8 个门禁工具
+    #   自己从未被门禁检查过**，而且 P2-13 那类"F821 未定义名"只要写在 tools/ 里就无人拦。
+    #
+    #   **只选 F 类，不管 E 类风格**：E501/E702/E402 这些是历史风格，
+    #   纳入只会产生噪声、逼人加 noqa；F 类才是真缺陷（未定义名 / 死代码 / 重定义）。
+    # ════════════════════════════════════════════════════════════════
+    rc3, out3 = _run([sys.executable, "-m", "ruff", "check", "--select", "F",
+                      str(ROOT / "tools"), str(ROOT / "tests")])
+    f_n = _static_count(rc3, out3)
+    findings["ruff_F(tools+tests)"] = f_n if f_n is not None else out3.strip()[:120]
+    if f_n is None:
+        return FAIL, f"tools/tests 的 F 类检查异常: {findings}", list(findings)
+    TOOLS_F_MAX = 42
+
+    if ok_main and f_n <= TOOLS_F_MAX:
+        return PASS, (f"ruff={ruff_n} mypy={mypy_n}（锁死 ≤{RUFF_MAX}/≤{MYPY_MAX}）"
+                      f"；tools+tests 的 F 类={f_n}（锁死 ≤{TOOLS_F_MAX}）"), list(findings)
+    return FAIL, (f"静态超基线 ruff={ruff_n} mypy={mypy_n} "
+                  f"tools+tests F={f_n}（锁死 ≤{RUFF_MAX}/≤{MYPY_MAX}/≤{TOOLS_F_MAX}）"), list(findings)
 
 
 def check_deps(skip_network=False):
@@ -172,7 +223,7 @@ def check_deps(skip_network=False):
 
 def check_secrets():
     """工程白名单外（打包器/构建器/win32 等排除）不得有密钥形式"""
-    ex_dirs = {".git", ".tmp_test_projects", "__pycache__",
+    ex_dirs = {".git", ".tmp_test_projects", "signature_extracts", "__pycache__",
                "tests", "tools", "downloader", "installer", "Docs"}
     hits = []
     for root, dirs, files in os.walk(ROOT):
@@ -255,6 +306,12 @@ def check_rules_assets():
         "sspai-post": ["sspai_article_sample"],
         "toutiao-article": ["toutiao_article_sample"],
         "36kr-article": ["kr_article_sample"],
+        # [v2.19.8 M2-e] 新增两个站点。`capture_sample.py` 的告警里写着
+        # "不登记的话门禁不会发现样本缺失（已知缺口）" —— 所以这里必须登记。
+        # 注意 smzdm 的实际文件名是**双 sample**（工具自己会加 `_sample` 后缀，
+        # 而我传的 --name 里已经带了）—— 照实写，别"顺手改整齐"。
+        "smzdm-post": ["smzdm_post_sample"],
+        "wechat-article": ["wechat_article_sample"],
     }
     if missing:
         return FAIL, f"规则加载失败 {len(missing)}: {missing[:3]}", [m[0] for m in missing]
@@ -266,7 +323,13 @@ def check_rules_assets():
             miss_samples.append(rule)
     if miss_samples:
         return FAIL, f"真实站点缺样本资产: {miss_samples}", miss_samples
-    return PASS, f"规则 {len(rules)} 全部加载通过；真实站点样本 10/10 齐备", []
+    # [v2.19.8 修复] 这句原来是**写死的** `样本 10/10 齐备` ——
+    # 我加了两个站点（smzdm / 公众号）后，它**照旧说 10/10**，
+    # 登记表里明明已是 12 个。**状态行撒谎比没状态行更坏**（会让人以为登记没生效）。
+    # 改成**按实际算出来的数**报。
+    _total = len(_SAMPLE_ALIAS)
+    return PASS, (f"规则 {len(rules)} 全部加载通过；"
+                  f"真实站点样本 {_total}/{_total} 齐备"), []
 
 
 def check_verify_all(skip_network=False):
@@ -280,9 +343,113 @@ def check_verify_all(skip_network=False):
     # 却让一个真 PASS 看起来像假绿，排查时要去翻源码才能确认。
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     verdict = next((ln for ln in lines if "总体" in ln), lines[-1] if lines else "")
-    if "总体: ✅ PASS" in out or rc == 0 and "PASS" in out:
+    # [v6 M2-c 收紧] 原判定是宽松合取 `rc == 0 and "PASS" in out`：只要输出里**任意位置**
+    # 出现 "PASS"（例如某条单项线自己的 ✅）就算过 —— 于是"总体 FAIL、某单项 PASS"
+    # 会被误判为 PASS。这是本工程最贵的错误类型（假 PASS）的一个真实入口。
+    # verify_all 的总体行**只在全过时**才打印 "总体: ✅ PASS"（见 verify_all.py:170），
+    # 故一律以总体行为准，不再看别的行。
+    if "总体: ✅ PASS" in out:
         return PASS, "verify_all: " + verdict, []
     return FAIL, f"verify_all 未PASS(rc={rc}): {out[-300:]}", []
+
+
+def check_structure_probe(skip_network=False):
+    """[v6 M2-c] 门禁第 11 项：结构指纹。
+
+    **离线部分永远跑**（样本结构指纹 ↔ 入库基准逐一比对），不符即 FAIL——
+    它能抓到两类静默失真：① 样本被替换/截断/编码改坏；② 指纹算法被悄悄改动
+    （探针口径一旦漂移，之后所有"结构变了"的告警都不可信）。
+
+    **在线部分仅在未 `--skip-network` 时**尝试（真站目标来自运行期数据根，不在仓库内）。
+    数不出来（无网络 / 未配目标 / 全部取不到）→ 退出码 2 → **如实 SKIP**，
+    绝不冒充 PASS。
+    """
+    cmd = [sys.executable, str(ROOT / "tools" / "fingerprint_baseline.py")]
+    if not skip_network:
+        cmd.append("--online")
+    rc, out = _run(cmd, timeout=300)
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    tail = lines[-1] if lines else ""
+    if rc == 0:
+        # 离线过了不代表在线过了——把"在线没跑"写在明面上，别让 PASS 被读大
+        if skip_network:
+            return PASS, "离线基准一致；**在线探针未开启**(--skip-network)", []
+        return PASS, tail[:120], []
+    if rc == 2:
+        # 2 = **数不出来**，既不是 PASS 也不是 FAIL —— 如实标注为跳过
+        return SKIP, tail[:120], []
+    return FAIL, tail[:160], []
+
+
+def check_silent_failures():
+    """[v6 第 12 项] 热路径静默失败扫描（`except: pass` 且无理由注释）。
+
+    `03-终检与闭环方案` 第一组写着"无新增 `except: pass` / 无日志的静默失败分支
+    （例外必须写理由注释）"——但这条**此前无法核对**：全仓实测 200+ 处，肉眼扫不出来，
+    文档却按"只有两处合法例外"的语气在写。现做成**锁定基线 + 只许降**：
+
+      · 修掉一处 → 跑 `--write-baseline` 更新，让基线变小；
+      · 要新增例外 → 在 `except` 行或 `pass` 行写 `# 理由`——
+        **写清理由的忽略是工程实践，不是债；不写理由的才是**。
+
+    只扫**热路径**（抓取/网络/安全/身份）：这几条链上的静默失败会直接变成
+    "用户看到的现象与真实原因不一致"，是工程最贵的一类；其余位置的清理是独立决策。
+    """
+    rc, out = _run([sys.executable, str(ROOT / "tools" / "silent_failure_scan.py")],
+                   timeout=180)
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    tail = lines[-1] if lines else ""
+    if rc == 0:
+        return PASS, tail[:130], []
+    return FAIL, tail[:170], []
+
+
+def check_sanitize_chain():
+    """[v6 第 13 项] 脱敏链路自检（**活体特征串**，而不是读代码猜）。
+
+    文档写着"全链路脱敏"，但此前**没有任何一项门禁核对它**；而且 `privacy_sanitize`
+    是个**能全局关掉内容脱敏的开关**——关掉后落盘/导出副本原样写出，也没有检查会变红。
+
+    本项往一个新 handler 打含特征串的日志，判据是"**输出里真的搜不到**"：
+    URL 签名参数 / Cookie 头 / 邮箱三类。
+    数不出来（没捕获到日志）→ 退出码 2 → **SKIP**，不冒充 PASS。
+
+    这一项不是形式主义：它上线当天就抓到了 `SESSDATA=…` 原样进日志的真缺口。
+    """
+    rc, out = _run([sys.executable, str(ROOT / "tools" / "sanitize_chain_check.py")],
+                   timeout=120)
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    tail = lines[-1] if lines else ""
+    if rc == 0:
+        return PASS, tail[:130], []
+    if rc == 2:
+        return SKIP, tail[:130], []
+    return FAIL, tail[:170], []
+
+
+def check_duplicate_capability():
+    """[v6 第 14 项] 「同一能力多份实现」扫描。
+
+    **这是本工程最稳定的缺陷模式**：连续九轮验证下来，出事的全是
+    "同一个能力在多处各写一份"——
+
+      · WebRTC 泄漏面 5 份实现，2 份各漏一条路径；下载会话 impersonate 3 份拷贝只修 2 份；
+      · UA↔TLS 主通道修过同源绑定而下载链没跟；重试策略 Redis 后端是陈旧分叉（落后 3 次修复）；
+      · `push`/`pop_batch` 两后端形参不符 → **TypeError**；防盗链 Referer 三种做法、两种命中 403。
+
+    此前每轮都是**人肉去找**"下一个能力"——这本身不可靠。现工具化：
+
+      · 同名跨模块且**形参不一致** → 阻断（调用点可能 TypeError，第 25 轮那两个就是）；
+      · 出现在 ≥3 个模块的名字 → 通用动词，只登记（实测校准：真出事的都是 2 个模块）；
+      · `**kwargs` 纯委托 → 视为兼容（否则误报 `write_page` 那类正常委托）。
+    """
+    rc, out = _run([sys.executable, str(ROOT / "tools" / "duplicate_capability_scan.py")],
+                   timeout=180)
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    tail = lines[-1] if lines else ""
+    if rc == 0:
+        return PASS, tail[:130], []
+    return FAIL, tail[:170], []
 
 
 def check_build_surface():
@@ -329,6 +496,10 @@ def main():
     section("8 规则/资产完整性"); checks.append(("规则资产", *check_rules_assets()))
     section("9 验证线");        checks.append(("verify_all", *check_verify_all(args.skip_network)))
     section("10 构建面自检");    checks.append(("构建面", *check_build_surface()))
+    section("11 结构指纹");      checks.append(("结构指纹", *check_structure_probe(args.skip_network)))
+    section("12 静默失败扫描");  checks.append(("静默失败", *check_silent_failures()))
+    section("13 脱敏链路");      checks.append(("脱敏链路", *check_sanitize_chain()))
+    section("14 同一能力多份实现"); checks.append(("多份实现", *check_duplicate_capability()))
 
     print("\n\n════════ 发版门禁汇总 ════════")
     fails = 0

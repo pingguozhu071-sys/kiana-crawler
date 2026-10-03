@@ -65,11 +65,47 @@ _PHONE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
 _IP_RE = re.compile(
     r"(?<![.\d])(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}(?![.\d])")
 
+# ════════════════════════════════════════════════════════════════
+# [v6 安全·活体自检发现] Cookie/令牌「名字=值」脱敏
+#   此前 `sanitize_text` 只覆盖手机号/邮箱/IP，于是 `SESSDATA=xxx` 这类**会话凭据**
+#   在日志里**原样输出**——而"cookies/密钥绝不进日志"是本工程的红线，
+#   且根 logger 过滤器正是靠 `sanitize_text` 兜底的（活体特征串自检当场抓到）。
+#
+#   ⚠️ 名字判据必须**按段比对**，不能做子串匹配：
+#   子串版会把 `author=zhangsan`（含 auth，而 author 正是导出副本的常见字段）与
+#   `login_time=…` 一并抹成 [REDACTED]——那是**数据损坏**，不是脱敏。
+#   现按 `_`/`-` 切段逐段比对；`auth`/`authorization` 这类整体名单独列。
+# ════════════════════════════════════════════════════════════════
+# 值的长度**不设下限**：判据是"名字带会话语义"，长度门槛只会漏掉短令牌
+# （`csrf_token=qqq` 就是被 4 字符门槛漏掉的一例）。噪声由名字判据挡，不由长度挡。
+_COOKIE_PAIR_RE = re.compile(r"([A-Za-z0-9_\-]{2,40})\s*=\s*([^;\s&\"'<>]{1,})")
+_SENSITIVE_SEGMENTS = frozenset({
+    "sess", "session", "sessionid", "phpsessid", "sessdata",
+    "token", "jwt", "csrf", "xsrf", "secret",
+    "passwd", "password", "pwd", "ckmd5", "sid", "abck", "bmsc",
+})
+_SENSITIVE_NAMES = frozenset({
+    "auth", "authorization", "sessdata", "phpsessid", "bili_jct", "dedeuserid",
+})
+
+
+def _is_secret_name(name: str) -> bool:
+    """名字是否带**会话/令牌**语义（按段比对，避免 author/login_time 被误伤）"""
+    n = name.lower()
+    if n in _SENSITIVE_NAMES:
+        return True
+    return any(seg in _SENSITIVE_SEGMENTS for seg in re.split(r"[_\-]+", n))
+
 
 def sanitize_text(text):
-    """脱敏文本中的手机号、邮箱、IP 地址（隐私保护核心功能）"""
+    """脱敏文本中的手机号、邮箱、IP 地址、**会话 cookie 值**（隐私保护核心功能）"""
     # [FIXED & MODIFIED] v2.10.4 手机号/邮箱边界修复：原 \b 在「汉字↔数字」之间不成立
     # （\w 含 CJK），「联系13812345678或」漏脱敏 → 隐私泄漏。改为 (?<!\d)/(?!\d) 纯数字边界。
+    if "=" in text:
+        # [v6] cookie 语义的「名字=值」先抹（最 specific，且不受后续 IP 规则影响）
+        text = _COOKIE_PAIR_RE.sub(
+            lambda m: f"{m.group(1)}=[REDACTED]" if _is_secret_name(m.group(1)) else m.group(0),
+            text)
     text = _PHONE_RE.sub("[手机号]", text)
     if "@" in text:
         text = _EMAIL_RE.sub("[邮箱]", text)

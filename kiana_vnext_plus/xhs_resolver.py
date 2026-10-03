@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """小红书解析器 xhs_resolver.py（v2.16.1 阶段3）
 
-通道策略（零逆向：只读公开页面，不依赖任何签名组件）：
-  window.__INITIAL_STATE__ / __NUXT__ 一类页面内嵌状态属公开页面数据结构，
-  取其媒体地址无需签名。实现：xhslink / xiaohongshu 短链 → 详情页 HTML →
-  __INITIAL_STATE__ JSON 深度行走，提取无水印图片 / 视频直链。
+通道策略（零逆向，避免受限许可/前端版本炸弹）：
+  签名类组件（x-s/x-t）普遍受"非商用 / 许可不清晰"约束，且随前端改版失效，
+  故本实现不接入任何签名组件，只走通用做法——"页面状态提取"
+  （window.__INITIAL_STATE__ 是公开页面数据结构）：xhslink/xiaohongshu 短链 →
+  详情页 HTML → __INITIAL_STATE__ JSON 深度行走提取无水印图片/视频直链。
   [配合 api_errors.xhs 码表——若未来接入签名 API 通道，错误可语义化]
 
 用法: python xhs_resolver.py <小红书链接>

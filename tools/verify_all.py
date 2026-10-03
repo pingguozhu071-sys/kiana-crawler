@@ -16,13 +16,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 PROJECT = Path(__file__).resolve().parent.parent
 
-BILI_URL = "https://b23.tv/duOgtrs"
-TIEBA_URL = "https://tieba.baidu.com/p/10978744587"  # 广撒网样例帖（历史实测帖）
-DOUYIN_URL = "https://v.douyin.com/-d3ivC_fK08/"
+# [v6 修复·推仓库前清理] 下面三条 URL 是**原作者的个人试点样本**。
+# 它们**不是机密**，但留在仓库里会让接手的人以为"这脚本只能跑这三个站"。
+# 改成环境变量可覆盖（`KIANA_VERIFY_BILI=...`），**默认值保留** ——
+# 原作者的老流程零变化，别人不用改代码就能跑自己的站。
+BILI_URL = os.environ.get("KIANA_VERIFY_BILI", "https://b23.tv/duOgtrs")
+TIEBA_URL = os.environ.get("KIANA_VERIFY_TIEBA",
+                           "https://tieba.baidu.com/p/10978744587")  # 广撒网样例帖
+DOUYIN_URL = os.environ.get("KIANA_VERIFY_DOUYIN", "https://v.douyin.com/-d3ivC_fK08/")
 
 
 def _cookie_env():
-    """测试 cookies 环境变量（用户自填文件，绝不打包）"""
+    """测试 cookies 环境变量（用户自填文件，绝不打包）
+
+    文件名是**浏览器导出时的常见形态**（`www.站点_cookies.txt`）。
+    找不到就跳过（下面的 `existing` 会过滤）—— **不是"必须存在"**，
+    写清楚免得后人误会。同理，`Path.home()` 而非写死用户名。
+    """
     dl = Path.home() / "Downloads"
     files = [str(dl / "www.bilibili.com_cookies.txt"),
              str(dl / "www.douyin.com_cookies.txt"),

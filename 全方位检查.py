@@ -192,7 +192,7 @@ core_imports = [
     ("kiana_vnext_plus.source_level_stealth", "stealth_navigate"),
     ("kiana_vnext_plus.source_level_stealth", "get_stealth_referer"),
     ("kiana_vnext_plus.source_level_stealth", "detect_browser_engine"),
-    ("kiana_vnext_plus.source_level_stealth", "configure_stealth_env"),
+    ("kiana_vnext_plus.source_level_stealth", "configure_rebrowser_env"),
     ("kiana_vnext_plus.source_level_stealth", "get_stealth_summary"),
     ("kiana_vnext_plus.fingerprint_consistency", "generate_default_fingerprint"),
     ("kiana_vnext_plus.fingerprint_consistency", "compute_fingerprint_from_ip"),

@@ -2,7 +2,12 @@
 """GUI 卡顿探针（离屏）：模拟 最大化/切页/壁纸渲染 后测量事件循环最大停顿。
 
 判定：事件循环单次停顿 > 200ms 即视为可感知卡顿（动画掉帧阈值）。
-用法: python tools/gui_perf_probe.py
+用法: python tools/gui_perf_probe.py [--real]
+
+[v2.19.9] 加**默认隔离**：`_phase_wallpaper()` 里那句 `win._wp_update("wp_blur", 6)`
+会一路走到 `launcher_v9.save_config()` → **写机主真实的 launcher_config.json**。
+本脚本原先没有任何隔离（离屏只是"不弹窗"，不是"不写盘"）。
+现在默认把数据根重定向到临时目录，跑完即删；要对真机跑请显式加 `--real`。
 """
 import os
 import sys
@@ -11,6 +16,12 @@ import importlib.util
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# ⚠️ 必须在 exec_module("launcher_v9") **之前**激活（见 _tools_isolation 的模块说明）
+from _tools_isolation import activate  # noqa: E402
+
+activate("gui_perf_probe")
 
 
 def main():
@@ -102,7 +113,7 @@ def main():
     def _finish():
         report["max_eventloop_stall_ms"] = round(stall["max"])
         report["stall_where"] = stall["where"]
-        # 判定只看稳态：page_warmup/startup 是首启构建成本（作者已认可），不计卡顿
+        # 判定只看稳态：page_warmup/startup 是首启构建成本（机主已认可），不计卡顿
         report["steady_stall_ms"] = round(stall["steady_max"])
         report["steady_stall_where"] = stall["steady_where"]
         ok = stall["steady_max"] < 200

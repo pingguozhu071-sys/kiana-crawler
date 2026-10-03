@@ -3,10 +3,14 @@ import hashlib
 import asyncio
 import logging
 from urllib.parse import urljoin, urlparse
+# [实测 v2.19.8 实体解码] 显式 `from html import unescape`：本模块的解析函数
+# **第一个形参就叫 `html`**（原始 HTML 文本），`import html` 的名字在里面会被
+# 形参遮蔽 → `html.unescape` 变成对字符串取属性（AttributeError）。
+from html import unescape as _html_unescape
 
 # [FIXED & MODIFIED] v2.9.2 缺 logger 定义：v2.6.5 trafilatura 异常兜底用 logger.debug
 # 但模块从未定义 logger → trafilatura 抛异常时 NameError 传播 → "Job failed: name 'logger'
-# is not defined"（作者 GUI 实测 0 pages 根因）——B站风控页触发 trafilatura 异常路径
+# is not defined"（机主 GUI 实测 0 pages 根因）——B站风控页触发 trafilatura 异常路径
 logger = logging.getLogger(__name__)
 
 try:
@@ -19,14 +23,14 @@ try:
 except Exception:
     # [FIXED & MODIFIED] v2.6.6 捕获所有异常（不只 ImportError）：trafilatura 2.2.0 在
     # 打包环境（onefile _MEI 路径）可能 import 即抛 configparser.NoOptionError
-    # （"No option 'min_extracted_size' in section: 'DEFAULT'"——作者 GUI 实测 0 pages 根因）
+    # （"No option 'min_extracted_size' in section: 'DEFAULT'"——机主 GUI 实测 0 pages 根因）
     trafilatura = None
 
 if trafilatura is not None:
     try:
         # [FIXED & MODIFIED] v2.6.6 配置键兜底注入：打包环境 settings.cfg 可能未加载 →
         # DEFAULT_CONFIG 缺 min_extracted_size 等键 → extract() 内部 config.get 抛
-        # NoOptionError → 整页处理失败（作者 BV16Uud6JEN5 日志实锤）。手动注入保证键存在。
+        # NoOptionError → 整页处理失败（机主 BV16Uud6JEN5 日志实锤）。手动注入保证键存在。
         import trafilatura.settings as _traf_settings
         for _k, _v in (("min_extracted_size", "250"), ("min_extracted_comm_size", "1"),
                        ("min_output_size", "1"), ("min_output_comm_size", "1")):
@@ -36,8 +40,21 @@ if trafilatura is not None:
         pass
 
 
-def extract_metadata(html, url):
-    """从 HTML 提取元数据：标题、描述、正文、链接、图片、视频等"""
+def extract_metadata(html, url, base_url=None):
+    """从 HTML 提取元数据：标题、描述、正文、链接、图片、视频等
+
+    [实测 v2.19.8 短链 bug] `base_url` = **本次请求实际落到的地址**（跟随重定向后的
+    终点），仅用于解析页面内的**相对链接**；`url` 仍是这次任务的请求 URL（`data["url"]`
+    与落库/去重口径不变——它是任务的标识，不是解析基址）。
+
+    为什么必须分开：短链种子（b23.tv/xxx → www.bilibili.com/video/BV…）下，页面里的
+    `/video/BVxxx` 是**相对 www.bilibili.com 的**。以短链主机为基址会拼出
+    `https://b23.tv/video/BVxxx`——这个地址**不存在**（短链服务只认它自己发的短码），
+    于是每一页出链都 404（机主实测 19/31 页失败的唯一原因）。
+    `base_url` 缺省/为空时退回 `url` —— **未发生重定向时行为与改前逐字一致**。
+    """
+    # 相对链接的解析基址：终到地址优先，缺失则退回请求 URL
+    base = base_url or url
     data = {
         "url": url, "title": "", "description": "", "author": "", "date": "",
         "text": "", "canonical": None, "json_ld": [], "og": {}, "images": [],
@@ -64,8 +81,35 @@ def extract_metadata(html, url):
     data["published_time"] = data["og"].get("article:published_time", "") or \
         data["og"].get("published_time", "") or data["date"]
 
+    # ── 标题：多级回退 [v6 修复·真机实测发现] ──────────────────────────
+    # 原实现**只有 `<title>` 一个来源**：
+    #     if soup.title and soup.title.string: data["title"] = ...
+    # 但**微信公众号文章的 `<title>` 是空的**（标题由 JS 写入 `<h1 id="activity-name">`，
+    # 而 `<h1>` 也是空的），真正的标题在 **`og:title`** 里。
+    # 后果：真机抓两篇公众号文章，**正文都拿到了（773 / 546 字），标题却是空**，
+    # 导出文件名成了 `untitled.md`。
+    # 现在按"信息质量从高到低"回退，并在取到 og:title 时**不再被空 `<title>` 覆盖**。
+    _title_candidates = []
     if soup.title and soup.title.string:
-        data["title"] = soup.title.string.strip()
+        _title_candidates.append(soup.title.string.strip())
+    _og_title = (data["og"].get("title") or "").strip()
+    if _og_title:
+        _title_candidates.append(_og_title)
+    for _m in soup.find_all("meta"):
+        _key = (_m.get("name") or _m.get("property") or "").lower()
+        if _key in ("twitter:title", "weibo:article:title"):
+            _v = (_m.get("content") or "").strip()
+            if _v:
+                _title_candidates.append(_v)
+    _h1 = soup.find("h1")
+    if _h1:
+        _v = _h1.get_text(strip=True)
+        if _v:
+            _title_candidates.append(_v)
+    for _c in _title_candidates:
+        if _c:
+            data["title"] = _c
+            break
 
     # html lang 属性（如 zh-CN）
     if soup.html and soup.html.get("lang"):
@@ -76,7 +120,7 @@ def extract_metadata(html, url):
         _rel = " ".join(_l.get("rel")) if isinstance(_l.get("rel"), (list, tuple)) else str(_l.get("rel") or "")
         if "icon" in _rel.lower():
             try:
-                data["favicon"] = urljoin(url, _l.get("href", ""))
+                data["favicon"] = urljoin(base, _html_unescape(_l.get("href", "")))
             except Exception:
                 pass
             break
@@ -86,7 +130,7 @@ def extract_metadata(html, url):
     # TypeError 打穿整页解析（此段不在任何 try 内）
     if canonical and canonical.get("href"):
         try:
-            data["canonical"] = urljoin(url, canonical.get("href"))
+            data["canonical"] = urljoin(base, _html_unescape(canonical.get("href")))
         except Exception:
             pass
 
@@ -106,7 +150,7 @@ def extract_metadata(html, url):
         # [FIXED & MODIFIED] v2.6.5 trafilatura 异常降级兜底——
         # trafilatura 2.2.0 内部 configparser 引用 options.min_extracted_size 配置缺失时
         # 抛 configparser.NoOptionError（No option 'min_extracted_size' in section: 'DEFAULT'）
-        # 导致整个页面处理失败（作者实测 0 pages done）→ 兜底用 article/main 纯文本
+        # 导致整个页面处理失败（机主实测 0 pages done）→ 兜底用 article/main 纯文本
         try:
             extracted = trafilatura.extract(html, output_format="json", url=url)
         except Exception as _e:
@@ -122,35 +166,65 @@ def extract_metadata(html, url):
         main = soup.find("article") or soup.find("main") or soup
         data["text"] = main.get_text(separator=" ", strip=True)[:5000]
 
-    for img in soup.find_all("img", src=True):
-        data["images"].append(urljoin(url, img["src"]))
+    # ── 图片：[v6 修复·真机实测发现] 必须支持**懒加载**属性 ──────────────
+    # 原实现是 `soup.find_all("img", src=True)` —— **只认 `src`**。
+    # 但现代站点（尤其微信公众号）正文图片**全是懒加载**：
+    # 真样本统计：页面 27 个 `<img>`，**只有 5 个有 `src`，19 个是 `data-src`**；
+    # 正文区 18 张图 **全部** 是 `data-src` → 一张都没抓到（真机跑两篇公众号，
+    # images 字段只有 2 条，其中一条还是页面 URL 本身）。
+    # 现按优先级取第一个可用地址，跳过 `data:` 内联图与明显占位符。
+    _LAZY_IMG_ATTRS = ("src", "data-src", "data-original", "data-lazy-src",
+                       "data-echo", "data-url", "data-actualsrc")
+    _seen_imgs = set()
+    for img in soup.find_all("img"):
+        _u = ""
+        for _attr in _LAZY_IMG_ATTRS:
+            _cand = (img.get(_attr) or "").strip()
+            if _cand and not _cand.startswith("data:"):
+                _u = _cand
+                break
+        if not _u:
+            continue
+        try:
+            _abs = urljoin(base, _html_unescape(_u))
+        except Exception:
+            continue
+        if _abs and _abs not in _seen_imgs:
+            _seen_imgs.add(_abs)
+            data["images"].append(_abs)
 
     # 修复：原来 find_all("src") 是错误的，应为 find_all("source")
     # <video> 标签内嵌 <source> 子标签，而非 <src> 标签
     for video in soup.find_all("video"):
         for src in video.find_all("source"):
             if src.get("src"):
-                data["videos"].append(urljoin(url, src["src"]))
+                data["videos"].append(urljoin(base, _html_unescape(src["src"])))
         if video.get("src"):
-            data["videos"].append(urljoin(url, video["src"]))
+            data["videos"].append(urljoin(base, _html_unescape(video["src"])))
     # [FIXED & MODIFIED] 补充 og:video 系列 meta 提取（og:video/og:video:secure_url/og:video:url）
     # 大量站点（新闻/影音站）以 og:video 作为主要视频入口，原实现漏掉
     for prop in ("og:video", "og:video:secure_url", "og:video:url"):
         meta = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
         if meta and meta.get("content"):
-            data["videos"].append(urljoin(url, meta["content"]))
+            data["videos"].append(urljoin(base, _html_unescape(meta["content"])))
     # 去重（video 与 og:video 可能重复）
     seen = set()
     data["videos"] = [v for v in data["videos"] if not (v in seen or seen.add(v))]
 
+    # [实测 v2.19.8 实体解码] `html.unescape`：`<img src>` 的实体由 lxml 顺手解了，
+    # 但 **`<a href>` 不会**（实测同一份 HTML：img 的 `&amp;` → `&`，a 的 `&amp;` 原样留存）。
+    # 不解的下场不是"多一个字符"而是**把 & 当普通字符百分号编码**：`?a=1&amp;b=2`
+    # 原样拼进 URL → 规范化后变成 `?a=1%26amp%3Bb=2`（机主日志里的 `?amp%3Btrackid=`
+    # 正是这个形状）→ **服务端收到一个不存在的参数名**，链接必 404。
+    # 只解一层：与浏览器对 href 的处理一致（HTML 规范规定属性值按字符引用解码一次）。
     for a in soup.find_all("a", href=True):
-        href = urljoin(url, a["href"])
+        href = urljoin(base, _html_unescape(a["href"]))
         if href.startswith("magnet:") or href.endswith(".torrent"):
             data["torrents"].append(href)
 
-    base_host = urlparse(url).netloc.lower()
+    base_host = urlparse(base).netloc.lower()
     for a in soup.find_all("a", href=True):
-        href = urljoin(url, a["href"])
+        href = urljoin(base, _html_unescape(a["href"]))
         parsed = urlparse(href)
         if parsed.scheme not in ("http", "https"):
             continue
@@ -224,6 +298,8 @@ def simhash_hamming(a, b):
     return bin(a ^ b).count("1")
 
 
-async def extract_metadata_async(html, url):
+async def extract_metadata_async(html, url, base_url=None):
     # CPU 卸载：解析放到线程池执行
-    return await asyncio.to_thread(extract_metadata, html, url)
+    # [实测 v2.19.8 短链 bug] base_url 一路透传（终到地址），缺省时 extract_metadata
+    # 自行退回 url —— 既有调用方不传参时行为与改前逐字一致。
+    return await asyncio.to_thread(extract_metadata, html, url, base_url)

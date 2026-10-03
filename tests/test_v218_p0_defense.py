@@ -1,4 +1,4 @@
-"""v2.18 P0 回归：defense GREEN 恢复后 min-wins 诉求必须归还（P0-3）
+"""v2.18 P0 回归：defense GREEN 恢复后 min-wins 诉求必须归还（bug_audit P0-3）
 
 旧雷：_apply_tier(GREEN) 因 TIER_CONCURRENCY[GREEN]=None 直接 return，
 RED 期间 adjust_global(5,"defense") 永久残留 → 一次风控误判后全局并发钳 5、

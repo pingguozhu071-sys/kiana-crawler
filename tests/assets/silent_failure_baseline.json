@@ -1,0 +1,101 @@
+{
+ "_说明": [
+  "热路径静默失败基线（门禁第 12 项）。",
+  "只许降不许升：修掉一处就更新本文件，让它变小。",
+  "要新增例外，请在 except 行或 pass 行写上 `#` 理由注释——",
+  "写清理由的忽略是工程实践，不是债；不写理由的才是。"
+ ],
+ "files": {
+  "kiana_vnext_plus/page_processor.py": [
+   303,
+   383,
+   817,
+   823,
+   847,
+   852,
+   978,
+   280,
+   288,
+   328,
+   839,
+   627,
+   114,
+   245,
+   610,
+   720
+  ],
+  "kiana_vnext_plus/protocol_engine.py": [
+   312
+  ],
+  "kiana_vnext_plus/media_downloader.py": [
+   86
+  ],
+  "kiana_vnext_plus/universal_downloader.py": [
+   203,
+   220,
+   252,
+   36,
+   105,
+   415,
+   535,
+   201,
+   487,
+   358,
+   362,
+   373,
+   391,
+   621,
+   125,
+   301,
+   821,
+   959
+  ],
+  "kiana_vnext_plus/m3u8_downloader.py": [
+   243,
+   64
+  ],
+  "kiana_vnext_plus/url_utils.py": [
+   273
+  ],
+  "kiana_vnext_plus/frontier.py": [
+   213,
+   221,
+   259
+  ],
+  "kiana_vnext_plus/redis_frontier.py": [
+   254
+  ],
+  "kiana_vnext_plus/solver_engine.py": [
+   353,
+   481,
+   638,
+   689,
+   693,
+   997,
+   1076,
+   1122,
+   1144,
+   367,
+   374,
+   1025,
+   1051,
+   1218,
+   1226,
+   607,
+   728,
+   741,
+   795,
+   807,
+   993,
+   387
+  ],
+  "kiana_vnext_plus/concurrency.py": [
+   93,
+   97,
+   89
+  ],
+  "kiana_vnext_plus/cookie_health.py": [
+   61
+  ]
+ }
+}

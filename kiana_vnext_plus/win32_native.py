@@ -166,9 +166,9 @@ def enable_large_pages():
 def ensure_high_performance_power_plan():
     """记录当前电源计划并切换到高性能（爬虫运行期间专用）。
 
-    作者授权：跑爬虫时开性能模式（符合作者"干活开性能"偏好）。
+    机主授权：跑爬虫时开性能模式（符合机主"干活开性能"偏好）。
     返回原计划 GUID，供爬虫结束时 restore_power_plan() 恢复，
-    保证平时作者自己的 Silent/奥创设置不受影响。
+    保证平时机主自己的 Silent/奥创设置不受影响。
     [v2.16 M7] 三档策略：power_strategy = performance|balanced|battery——balanced 用
     Windows 内置平衡 GUID，battery 用节能 GUID（绿色爬虫档）。
     """
@@ -223,7 +223,7 @@ def record_energy_probe() -> dict:
 
 
 def restore_power_plan(original_guid):
-    """爬虫结束后恢复原来的电源计划（作者日常设置不受影响）"""
+    """爬虫结束后恢复原来的电源计划（机主日常设置不受影响）"""
     if not original_guid:
         return
     try:

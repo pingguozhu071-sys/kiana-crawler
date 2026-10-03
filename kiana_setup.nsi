@@ -1,12 +1,12 @@
-﻿; Kiana Vnext Plus installer (NSIS 3.x) — v2.17.2 现代风格 + 8 语种安装/卸载向导（P0: 装/卸 Section 修复 + 字体清晰化 + DPI 感知）
+; Kiana Vnext Plus installer (NSIS 3.x) — v2.17.2 现代风格 + 8 语种安装/卸载向导（P0: 装/卸 Section 修复 + 字体清晰化 + DPI 感知）
 ; 美术对齐 GUI：暗色渐变 + #4FA3E8 强调 + 8px 圆角卡片；字体 Roboto（System 注册，回退系统）
 ; 语言：en-GB(默认回退)/en-US/zh-CN/zh-TW/zh-HK/ja-JP/ko-KR/fr-FR；自定义文案 lang_strings.nsi
 Unicode True
 
 !define APP_NAME "Kiana Vnext Plus"
 !define APP_EXE "KianaLauncher.exe"
-!define APP_VERSION "2.19.8"
-!define VERSION "2.19.8.0"
+!define APP_VERSION "2.19.9"
+!define VERSION "2.19.9.0"
 !define PUBLISHER "Kiana Labs"
 !define DIST_DIR "dist"
 !define ASSETS_DIR "assets"

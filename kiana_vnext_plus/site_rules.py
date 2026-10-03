@@ -20,7 +20,7 @@
     pagination:
       next: {sel: "a.next", attr: href}
 
-设计目标（本工程自研）：
+设计参考 Jormungandr adapters/generic.py 的思路（自研实现）：
 单规则文件失败仅 warning 不拖垮整体（RuleLoader 容错）；
 本模块不 import 任何重依赖（bs4/pyyaml 惰性）。
 """
@@ -210,14 +210,21 @@ def _extract_fields(soup, fields_cfg) -> dict:
     return out
 
 
-def apply_rule(html: str, url: str) -> Optional[dict]:
+def apply_rule(html: str, url: str, base_url: Optional[str] = None) -> Optional[dict]:
     """按命中规则抽取页面 → dict（未被规则命中/解析失败返回 None）。
-    返回结构：{name, item_type, fields, images, next_url, list_items}"""
+    返回结构：{name, item_type, fields, images, next_url, list_items}
+
+    [实测 v2.19.8 短链 bug] `base_url` = **跟随重定向后的终到地址**，只用于把页面里的
+    **相对链接**（list_items 的 item_link / 翻页 next_url）补成绝对 URL。短链种子下
+    若按请求地址补，会补出 `https://b23.tv/page/2` 这种不存在的地址——入队即 404，
+    与 parser 里那批 urljoin 是同一个坑。`rule` 仍按 `url` 匹配（口径不变），
+    `base_url` 缺省时与改前逐字一致。"""
     if not (_YAML_OK and _BS4_OK):
         return None
     rule = find_rule(url)
     if rule is None:
         return None
+    base = base_url or url
     try:
         soup = BeautifulSoup(html or "", "lxml")
         result: dict = {"name": rule.name, "item_type": rule.item_type,
@@ -233,7 +240,7 @@ def apply_rule(html: str, url: str) -> Optional[dict]:
                     item = _extract_fields(b, rule.list_cfg.get("fields"))
                     # [v2.17 5.1] item_link 保留键：相对链接提取入队 detail（补全为绝对 URL）
                     if item.get("item_link"):
-                        item["item_link"] = urljoin(url, str(item["item_link"]))
+                        item["item_link"] = urljoin(base, str(item["item_link"]))
                     if any(v for v in item.values()):
                         result["list_items"].append(item)
         except Exception as e:
@@ -272,7 +279,7 @@ def apply_rule(html: str, url: str) -> Optional[dict]:
                 continue
             href = str(nxt.get(_c.get("attr", "href")) or "")
             if href:
-                result["next_url"] = urljoin(url, href)
+                result["next_url"] = urljoin(base, href)
                 break
 
         # title 兜底

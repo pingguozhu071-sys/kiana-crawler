@@ -1,0 +1,229 @@
+{
+ "_说明": [
+  "「定义了但引擎内无人调用」的函数基线（面向「死代码/没接线」这一类）。",
+  "引擎本质上是库：部分函数是**对外 API**（CLI/外部脚本/未来调用），故只登记、不阻断。",
+  "但**新增**一个没人调用的函数应当被看见——要么接线，要么登记。",
+  "只查「引擎内零引用」；框架回调（do_POST 等）已豁免。",
+  "**只许降不许升**：接上或删掉一个就更新基线让它变小。",
+  "[v2.19.9] `local_storage_of` 登记理由：它是 storage_state 里 localStorage 的访问器，专读 B站 的 `ac_time_value`（= refresh_token，手动导出的 cookies.txt 里根本没有它）。机主尚未决定做不做 B站 续期（那个接口有法律风险），所以现在**没有调用点**；删了将来要用又得重写 ⇒ **登记而非删除**。"
+ ],
+ "dead_functions": {
+  "clean_html": {
+   "sites": [
+    "adaptive_v2.py:171"
+   ],
+   "test_only": true
+  },
+  "extract_structured": {
+   "sites": [
+    "adaptive_v2.py:197"
+   ],
+   "test_only": true
+  },
+  "detect_and_solve": {
+   "sites": [
+    "challenge_solver.py:713"
+   ],
+   "test_only": false
+  },
+  "get_all_supported_types": {
+   "sites": [
+    "challenge_solver.py:727"
+   ],
+   "test_only": false
+  },
+  "used_permits": {
+   "sites": [
+    "concurrency.py:35"
+   ],
+   "test_only": false
+  },
+  "get_captcha_api_keys": {
+   "sites": [
+    "config.py:395"
+   ],
+   "test_only": false
+  },
+  "get_total_challenge_types": {
+   "sites": [
+    "config.py:403"
+   ],
+   "test_only": false
+  },
+  "is_defense_mode": {
+   "sites": [
+    "config.py:407"
+   ],
+   "test_only": false
+  },
+  "get_memory_thresholds": {
+   "sites": [
+    "config.py:411"
+   ],
+   "test_only": false
+  },
+  "report_failure": {
+   "sites": [
+    "cookie_armory.py:336"
+   ],
+   "test_only": true
+  },
+  "current_delay": {
+   "sites": [
+    "defense_protocols.py:197"
+   ],
+   "test_only": false
+  },
+  "get_domain_stats": {
+   "sites": [
+    "defense_protocols.py:379",
+    "smart_adaptive.py:185"
+   ],
+   "test_only": false
+  },
+  "get_risk_trend": {
+   "sites": [
+    "defense_protocols.py:490"
+   ],
+   "test_only": false
+  },
+  "get_domain_risk_summary": {
+   "sites": [
+    "defense_protocols.py:699"
+   ],
+   "test_only": false
+  },
+  "is_duplicate": {
+   "sites": [
+    "enhancements.py:355"
+   ],
+   "test_only": true
+  },
+  "get_inflight": {
+   "sites": [
+    "exit_manager.py:571"
+   ],
+   "test_only": false
+  },
+  "get_stats": {
+   "sites": [
+    "exit_manager.py:591"
+   ],
+   "test_only": false
+  },
+  "force_rotate_domain": {
+   "sites": [
+    "exit_manager.py:619"
+   ],
+   "test_only": false
+  },
+  "disable_node": {
+   "sites": [
+    "exit_manager.py:628"
+   ],
+   "test_only": false
+  },
+  "set_setting": {
+   "sites": [
+    "frontier.py:389"
+   ],
+   "test_only": false
+  },
+  "get_setting": {
+   "sites": [
+    "frontier.py:393"
+   ],
+   "test_only": false
+  },
+  "generate_subresource_headers": {
+   "sites": [
+    "header_generator.py:117"
+   ],
+   "test_only": false
+  },
+  "secure_erase": {
+   "sites": [
+    "identity.py:6"
+   ],
+   "test_only": false
+  },
+  "test_connection": {
+   "sites": [
+    "llm_client.py:218"
+   ],
+   "test_only": false
+  },
+  "sync_cookies_from_browser": {
+   "sites": [
+    "protocol_engine.py:404"
+   ],
+   "test_only": false
+  },
+  "sync_cookies_to_browser": {
+   "sites": [
+    "protocol_engine.py:435"
+   ],
+   "test_only": false
+  },
+  "resolve_dns_via_doh": {
+   "sites": [
+    "protocol_engine.py:477"
+   ],
+   "test_only": false
+  },
+  "fetch_stealth": {
+   "sites": [
+    "protocol_engine.py:581"
+   ],
+   "test_only": false
+  },
+  "set_domain_rate": {
+   "sites": [
+    "rate_limiter.py:136"
+   ],
+   "test_only": false
+  },
+  "content_bytes": {
+   "sites": [
+    "response_adapter.py:34"
+   ],
+   "test_only": false
+  },
+  "serve_in_thread": {
+   "sites": [
+    "solver_service.py:194"
+   ],
+   "test_only": true
+  },
+  "archive_is_outside_repo": {
+   "sites": [
+    "trace_forensics.py:141"
+   ],
+   "test_only": true
+  },
+  "archive_trace": {
+   "sites": [
+    "trace_forensics.py:155"
+   ],
+   "test_only": true
+  },
+  "build_ultimate_combined": {
+   "sites": [
+    "ultimate_evasion.py:652"
+   ],
+   "test_only": true
+  },
+  "record_energy_probe": {
+   "sites": [
+    "win32_native.py:211"
+   ],
+   "test_only": false
+  },
+  "local_storage_of": {
+   "sites": [
+    "cookie_profile.py:416"
+   ],
+   "test_only": true
+  }
+ }
+}

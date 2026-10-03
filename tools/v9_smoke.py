@@ -1,18 +1,31 @@
-"""launcher_v9 冒烟：移屏外 show + 四页切换截图 + 关键控件断言（不遮挡桌面）"""
-import sys, os
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
+"""launcher_v9 冒烟：移屏外 show + 四页切换截图 + 关键控件断言（不遮挡桌面）
 
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QTimer
+[v2.19.9] 加**默认隔离**：`KianaV9()` 构造期就有写机主真实配置的路径（启动迁移钩子），
+本脚本原先靠 `move(-2600,-1600)` 只躲开了**视线**、没躲开**数据**。
+现在默认把数据根重定向到临时目录，跑完即删；要对真机跑请显式加 `--real`。
+"""
+from pathlib import Path
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 显式把 tools/ 也放进来：直接跑时 Python 会自动加脚本目录，但 `python -m tools.v9_smoke`
+# 那种跑法不会 —— 显式写一行，两种跑法都能 import 到隔离器。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# ⚠️ 必须在 import launcher_v9 **之前**激活（见 _tools_isolation 的模块说明）
+from _tools_isolation import activate  # noqa: E402
+
+activate("v9_smoke")
+
+from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import QTimer  # noqa: E402
 
 app = QApplication(sys.argv)
-import launcher_v9
+import launcher_v9  # noqa: E402
 
 win = launcher_v9.KianaV9()
 # ── 底图集成冒烟（阶段 B）──
 win.config["wp_mode"] = "single"
-win.config["wp_path"] = os.path.join(_ROOT, "tests", "assets", "sample_anime_2.jpg")
+win.config["wp_path"] = str(Path(__file__).resolve().parent.parent / "tests" / "assets" / "sample_anime_2.jpg")
 win.config["wp_blur"] = 6
 win.config["wp_auto_dim"] = True
 win.config["wp_accent_lock"] = False
@@ -63,7 +76,7 @@ def _finish():
     print("CHECKS:", checks)
     print("SMOKE:", "PASS" if (ok and all(checks.values())) else "FAIL")
     try:
-        with open(os.path.join(_ROOT, "tests", "assets", "v9_smoke_result.txt"),
+        with open(str(Path(__file__).resolve().parent.parent / "tests" / "assets" / "v9_smoke_result.txt"),
                   "w", encoding="utf-8") as f:
             f.write(f"{checks}\nSMOKE: {'PASS' if (ok and all(checks.values())) else 'FAIL'}\n")
     except Exception:

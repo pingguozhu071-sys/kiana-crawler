@@ -1,19 +1,26 @@
 """源码级浏览器隐身模块
 
-浏览器层的启动参数与上下文选项实现：通过协议层（CDP）与启动参数调整，
-降低自动化特征的可检测性。运行时依赖见 `requirements.txt`（浏览器自动化由 patchright 提供）。
+基于 GitHub 开源项目（rebrowser-patches、patchright、CloakBrowser、camoufox）
+研究实现的协议层与源码层反检测技术。
 
 核心原理：
-1. 协议层（CDP）：避免 Runtime.Enable 等域泄漏、延迟 CDP 域激活
-2. 源码层（launch args + CDP commands）：调整浏览器启动参数，移除自动化标志，
-   优先用 CDP 命令在协议层改指纹，而非 JS 注入
-3. 行为层：referer、真实 viewport、延迟初始化
+1. 协议层（Patchright/CDP）：修复 Runtime.Enable 泄漏、sourceURL 泄漏、
+   utility world 名称泄漏，延迟 CDP 域激活
+2. 源码层（launch args + CDP commands）：优化浏览器启动参数，移除自动化标志，
+   使用 CDP 命令在协议层修改指纹而非 JS 注入
+3. 行为层：Google referer、真实 viewport、延迟初始化
 
-设计原则：
-- 原则1：不在 wrapper 层做 JS 级反检测（属性覆盖会留下可检测痕迹）
-- 原则2：不做 config 级指纹 hack（语言/窗口尺寸本身会构成指纹）
+关键参考：
+- rebrowser-patches: https://github.com/rebrowser/rebrowser-patches
+- patchright: https://github.com/Kaliiiiiiiiii-Vinyzu/patchright
+- CloakBrowser: https://github.com/CloakHQ/CloakBrowser
+- anti-detection-work: https://github.com/zhizhuodemao/js-reverse-mcp
+
+设计原则（来自 js-reverse-mcp 的血泪教训）：
+- 原则1：不在 wrapper 层做 JS 级反检测（Object.defineProperty 会留下可检测痕迹）
+- 原则2：不做 config 级指纹 hack（--lang/--window-size 等本身成为指纹）
 - 原则3：CDP 必须延迟（导航期间不激活 Network.enable/Debugger.enable）
-- 原则4：区分隐身目的的删除与体验目的的删除
+- 原则4：区分 stealth 删除与 UX 删除
 - 原则5：有头优先（headless 仍有检测向量）
 """
 
@@ -25,17 +32,17 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 环境变量配置：协议层补丁控制
+# 环境变量配置：rebrowser-patches 补丁控制
 # 必须在 import playwright/patchright 之前设置
 # ═══════════════════════════════════════════════════════════════════════
 
-def configure_stealth_env(
+def configure_rebrowser_env(
     runtime_fix_mode: str = "addBinding",
     source_url: str = "app.js",
     utility_world_name: str = "util",
     debug: bool = False,
 ):
-    """配置协议层补丁所需的环境变量
+    """配置 rebrowser-patches 环境变量
 
     必须在导入 playwright/patchright 之前调用，否则补丁不会生效。
 
@@ -57,7 +64,7 @@ def configure_stealth_env(
     if debug:
         os.environ["REBROWSER_PATCHES_DEBUG"] = "1"
     logger.info(
-        f"隐身运行时配置: mode={runtime_fix_mode}, "
+        f"rebrowser-patches 配置: mode={runtime_fix_mode}, "
         f"sourceURL={source_url}, world={utility_world_name}"
     )
 
@@ -137,7 +144,7 @@ _HEADED_EXTRA_ARGS = [
 def build_stealth_launch_args(headless: bool = True) -> list:
     """构建隐身浏览器启动参数
 
-    基于公开的浏览器协议层隐身实践，
+    基于 rebrowser-patches、patchright 和 CloakBrowser 的研究，
     移除所有可能暴露自动化的启动参数，添加隐身参数。
 
     Args:
@@ -167,7 +174,7 @@ def build_stealth_context_options(
 ) -> dict:
     """构建隐身上下文选项
 
-    设计原则：
+    基于 js-reverse-mcp 的设计原则：
     - viewport: null 使用真实屏幕尺寸（假 viewport 本身是 bot 信号）
     - 使用指纹数据设置 locale/timezone/UA
     - 不设置 config 级指纹 hack（如 --lang、--window-size）
@@ -236,7 +243,7 @@ def build_stealth_context_options(
 class CDPDeferralManager:
     """CDP 域延迟激活管理器
 
-    核心发现：
+    来自 js-reverse-mcp 的核心发现：
     反爬脚本（Cloudflare 挑战、reCAPTCHA 等）在页面加载期间主动探测 CDP 流量。
     看到 Network.requestWillBeSent 订阅是即时的 bot 判决。
     延迟初始化 = 让风控 JS 运行、通过，然后再打开调试通道。
@@ -497,7 +504,7 @@ def detect_browser_engine() -> Dict[str, Any]:
         "engine": "unknown",
         "has_patchright": False,
         "has_playwright": False,
-        "stealth_env_configured": False,
+        "rebrowser_configured": False,
         "runtime_fix_mode": "none",
         "source_url_fix": False,
         "utility_world_fix": False,
@@ -524,10 +531,10 @@ def detect_browser_engine() -> Dict[str, Any]:
     except ImportError:
         pass
 
-    # 检查协议层环境变量
+    # 检查 rebrowser-patches 环境变量
     mode = os.environ.get("REBROWSER_PATCHES_RUNTIME_FIX_MODE")
     if mode:
-        info["stealth_env_configured"] = True
+        info["rebrowser_configured"] = True
         info["runtime_fix_mode"] = mode
         info["source_url_fix"] = os.environ.get("REBROWSER_PATCHES_SOURCE_URL", "") != "0"
         info["utility_world_fix"] = os.environ.get("REBROWSER_PATCHES_UTILITY_WORLD_NAME", "") != "0"
@@ -542,9 +549,9 @@ def get_stealth_summary() -> str:
         f"浏览器引擎: {info['engine']}",
         f"Patchright: {'✅' if info['has_patchright'] else '❌'}",
         f"Playwright: {'✅' if info['has_playwright'] else '❌'}",
-        f"协议层补丁: {'✅' if info['stealth_env_configured'] else '❌'}",
+        f"rebrowser-patches: {'✅' if info['rebrowser_configured'] else '❌'}",
     ]
-    if info["stealth_env_configured"]:
+    if info["rebrowser_configured"]:
         lines.append(f"  Runtime.Enable 修复模式: {info['runtime_fix_mode']}")
         lines.append(f"  sourceURL 清洗: {'✅' if info['source_url_fix'] else '❌'}")
         lines.append(f"  Utility World 名称: {'✅' if info['utility_world_fix'] else '❌'}")
@@ -556,13 +563,13 @@ def get_stealth_summary() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 代理信号清理
+# 代理信号清理（基于 CloakBrowser v0.5.2 研究）
 # ═══════════════════════════════════════════════════════════════════════
 
 async def apply_proxy_signal_cleanup(page, cdp_manager: CDPDeferralManager):
     """清理代理使用痕迹
 
-    代理信号移除技术：
+    基于 CloakBrowser 的代理信号移除技术：
     - DNS/connect/SSL 时间归零（消除代理延迟特征）
     - Proxy-Connection 头泄漏移除
     - 代理缓存头剥离
@@ -588,7 +595,7 @@ async def apply_proxy_signal_cleanup(page, cdp_manager: CDPDeferralManager):
     })
 
     # 2. 禁用 WebRTC 以防止 IP 泄漏（如果不需要 WebRTC 功能）
-    # 用 --fingerprint-webrtc-ip=auto 欺骗 ICE 候选
+    # CloakBrowser 使用 --fingerprint-webrtc-ip=auto 来欺骗 ICE 候选
     # 在 Playwright 中我们通过 CDP 模拟类似效果
     await cdp_manager.execute_cdp("WebRTC.disable", {})
 
@@ -598,7 +605,7 @@ async def apply_proxy_signal_cleanup(page, cdp_manager: CDPDeferralManager):
 async def apply_webrtc_ip_spoof(page, cdp_manager: CDPDeferralManager, proxy_ip: str = ""):
     """WebRTC IP 欺骗
 
-    基于 --fingerprint-webrtc-ip=auto 的做法：
+    基于 CloakBrowser 的 --fingerprint-webrtc-ip=auto 技术：
     解析代理出口 IP 并欺骗 WebRTC ICE 候选地址。
 
     反爬系统通过 WebRTC 获取真实 IP 地址来检测代理使用。
@@ -613,7 +620,7 @@ async def apply_webrtc_ip_spoof(page, cdp_manager: CDPDeferralManager, proxy_ip:
 
     # 通过 CDP 禁用 WebRTC ICE 候选收集
     # 这会阻止 STUN/TURN 请求泄漏真实 IP
-    # 在 C++ 层修改 ICE 候选生成，
+    # CloakBrowser 在 C++ 层修改 ICE 候选生成，
     # 我们通过 WebRTC 策略禁用来达到类似效果
     await cdp_manager.execute_cdp("WebRTC.disable", {})
 

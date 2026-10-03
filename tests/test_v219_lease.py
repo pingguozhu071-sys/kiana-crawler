@@ -133,7 +133,7 @@ class TestMigrationV5AndThrottle(unittest.TestCase):
     def test_old_v4_db_migrates_without_data_loss(self):
         """[v2.19.3 质检] 老库（v4，无 throttle_count）升级必须**保留全部数据**且**幂等**。
 
-        作者已装旧版，升级安装后会跑此迁移——丢数据不可接受。"""
+        机主已装旧版，升级安装后会跑此迁移——丢数据不可接受。"""
         import sqlite3 as _sq
         import importlib
         import kiana_vnext_plus.frontier as fm
@@ -173,14 +173,14 @@ class TestMigrationV5AndThrottle(unittest.TestCase):
             rows = list(c.execute("SELECT url_hash, status, depth, COALESCE(throttle_count,-1)"
                                   " FROM frontier ORDER BY url_hash"))
             c.close()
-            self.assertEqual(ver, 5, "应迁移到 v5")
+            self.assertEqual(ver, fm.SCHEMA_VERSION, "应迁移到当前 schema 版本")
             self.assertIn("throttle_count", cols)
             self.assertEqual(rows, [("h1", "done", 0, 0), ("h2", "pending", 1, 0)],
                              "老数据必须完整保留（状态/深度不变，新列取默认 0）")
 
             fm.FrontierDB(path)          # 幂等：二次迁移
             c = _sq.connect(path)
-            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0], fm.SCHEMA_VERSION)
             self.assertEqual(c.execute("SELECT COUNT(*) FROM frontier").fetchone()[0], 2)
             c.close()
         finally:

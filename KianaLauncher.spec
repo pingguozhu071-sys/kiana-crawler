@@ -4,10 +4,14 @@ import shutil
 from pathlib import Path as _P
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
-# [FIXED & MODIFIED] v2.14 阶段4 供应链：动态解析路径（原硬编码本机用户名+
-# Python 版本绝对路径——换机/升 Python 构建必炸）。照抄 universal_downloader
+# [FIXED & MODIFIED] v2.14 阶段4 供应链：动态解析路径（原硬编码 miku0 用户名+
+# Python314 版本绝对路径——换机/升 Python 构建必炸）。照抄 universal_downloader
 # 的动态定位模式。
 def _find_ddddocr_dir():
+    # [v6] **优先工程内的 vendor 副本**（机主要求"打包也打进去"），没有才退回 site-packages。
+    _v = _P(SPECPATH) / "vendor" / "ddddocr"
+    if _v.is_dir():
+        return str(_v)
     try:
         import ddddocr
         return str(_P(ddddocr.__file__).parent)
@@ -30,6 +34,26 @@ _fp = _find_ffmpeg("ffprobe.exe")
 
 hiddenimports = []
 hiddenimports += collect_submodules('kiana_vnext_plus')
+
+# ── [v6] 内置第三方部件（`vendor/`）：camoufox 隐身内核 + ddddocr 验证码 ──────────
+# 机主要求"打包也打进去"。⚠️ 源码**不入 git**（见 `vendor/README.md`），但**要打进 exe**。
+_SPEC_DIR = _P(SPECPATH)
+_vendor_dir = _SPEC_DIR / "vendor"
+_pathex = []
+_vendor_pkgs = []
+if _vendor_dir.is_dir():
+    for _pkg in ("camoufox", "ddddocr"):
+        if (_vendor_dir / _pkg).is_dir():
+            _vendor_pkgs.append(_pkg)
+            try:
+                hiddenimports += collect_submodules(_pkg)
+            except Exception as _e:
+                print(f"[spec] collect_submodules({_pkg}) 失败: {_e}")
+    if _vendor_pkgs:
+        _pathex.append(str(_vendor_dir))
+    print(f"[spec] vendor 部件入包: {_vendor_pkgs or '（无）'}")
+else:
+    print("[spec] ⚠️ 未找到 vendor/ —— camoufox/ddddocr 不会被打进包")
 hiddenimports += collect_submodules('qfluentwidgets')
 wp_datas = [('assets', 'assets'), ('run_crawler.py', '.')]
 # [v2.16.1] 站点规则层进包（GUI 进程内引擎同样消费规则层——原缺失导致安装版规则恒空）
@@ -103,7 +127,7 @@ else:
 
 a = Analysis(
     ['launcher_v9.py'],
-    pathex=[],
+    pathex=_pathex,   # [v6] 含 vendor/（内置第三方部件）
     binaries=wp_binaries,
     datas=wp_datas,
     hookspath=[],

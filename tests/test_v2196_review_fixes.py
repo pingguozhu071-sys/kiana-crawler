@@ -46,11 +46,39 @@ class TestBlockedStatusNotUpgradeSignal(unittest.TestCase):
         self.assertNotIn("ResponseAdapter(403", src, "拦截态不得用 403（会触发浏览器升级）")
 
     def test_400_not_consumed_by_fallback_chain(self):
-        """确认 400 不会被任何回退判定消费（403/429/503 才会）"""
+        """确认 400 不会被任何回退判定消费（403/429/503 才会）
+
+        [v6 修复·**这条测试自己踩过"拿文本当结构"的坑**]
+        原来它把 `_needs_solver` 的**源码文本**拿来断言：
+            self.assertIn("(403, 429, 503)", src)
+            self.assertNotIn("400", src)          # ← 只要注释里出现"400"就炸
+        我 v6 改这个函数时，**在 docstring 里写了一句"不得含 400"**
+        （正常的中文说明），它当场变红 —— 而**行为完全正确**。
+        **它考的是"文本里有没有这几个字符"，不是"400 会不会触发回退"。**
+
+        改成**查行为**：直接喂不同状态码的响应，看回退判定怎么答。
+        这样既更强（真的验证语义），也不会被注释里的字绊倒。
+        """
         from kiana_vnext_plus.engine_router import EngineRouter
-        resp_src = inspect.getsource(EngineRouter._needs_solver)
-        self.assertIn("(403, 429, 503)", resp_src, "回退信号是 403/429/503")
-        self.assertNotIn("400", resp_src, "400 不应在回退信号内")
+        from kiana_vnext_plus.response_adapter import ResponseAdapter
+
+        class _R(EngineRouter):
+            def __init__(self):   # 只测这一个纯函数，不建依赖
+                pass
+
+        r = _R()
+        # 干净正文：排除关键词干扰，单独看状态码的作用
+        clean = "<html><body><h1>ok</h1></body></html>"
+        for code in (403, 429, 503):
+            self.assertTrue(
+                r._needs_solver(ResponseAdapter(code, "https://x/", {}, raw_text=clean)),
+                f"{code} 必须触发回退（既有语义）")
+        self.assertFalse(
+            r._needs_solver(ResponseAdapter(400, "https://x/", {}, raw_text=clean)),
+            "400 不得触发回退（400 是**拦截态**的主动信号，不是挑战信号）")
+        self.assertFalse(
+            r._needs_solver(ResponseAdapter(200, "https://x/", {}, raw_text=clean)),
+            "干净的 200 不该触发回退")
 
     def test_solver_layer_has_ssrf_guard(self):
         """R1 第二部分：浏览器层（solver）必须自建闸（纵深防御）"""

@@ -147,7 +147,9 @@ def main():
     from kiana_vnext_plus.solver_engine import SolverEngine
     from omegaconf import OmegaConf
 
-    gcfg = GlobalConfig(OmegaConf.create({"log_level": "INFO"}))
+    # [v6] 同 stealth_ab：**不是死代码**——`GlobalConfig.__init__` 首跑会生成/加载
+    # `master.key.bin`。去掉赋值只为消除 ruff F841，调用本身要保留。
+    GlobalConfig(OmegaConf.create({"log_level": "INFO"}))
     solver = SolverEngine(pool_size=1, max_pages_per_context=3,
                           memory_limit_mb=4096, headless=True)
 

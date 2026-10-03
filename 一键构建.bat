@@ -1,12 +1,12 @@
 @echo off
 chcp 65001 >nul 2>&1
-title Kiana Vnext Plus - 一键构建工具 v2.19.8
+title Kiana Vnext Plus - 一键构建工具 v2.10.5
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 echo ==================================================
 echo   Kiana Vnext Plus
-echo   Windows 一键构建工具 (v2.19.8)
+echo   Windows 一键构建工具 (v2.10.5)
 echo   PyInstaller 双 exe + NSIS 安装器
 echo ==================================================
 echo.

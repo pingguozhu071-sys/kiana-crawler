@@ -156,6 +156,24 @@ def _is_real_video_file(p) -> bool:
         return False
 
 
+def _batch_cap(max_pages, done, hard_cap=50):
+    """[v2.19.9] 单批取任务数的上限 —— 必须受**总页数上限**约束。
+
+    **为什么需要它**：`max_pages` 是在**每个任务开始前**才查的（`page_processor`），
+    而 `pop_batch` 一次最多租出 50 个任务、随即被**并发启动** ⇒ 那 50 个查到的是
+    **同一个"还没超"的计数** ⇒ **全部照跑**。真机实测：`-m 3` 跑了 **10 页**
+    （种子的 9 个链接在同一批里租出）—— 使用者设的页数上限**拦不住一个批**。
+
+    额度用完（`room <= 0`）时**故意返回满额**：这一批会被逐条判为"超上限" →
+    记 `skipped` 并移出 pending，正是我们要的**快速排空**；收窄到 0 反而会让
+    `pop_batch` 恒空、`pending` 永不清零 ⇒ **又变成空转**（本工程刚修过同一形状）。
+    """
+    room = int(max_pages) - int(done)
+    if room <= 0:
+        return int(hard_cap)
+    return max(1, min(int(hard_cap), room))
+
+
 class Crawler:
     """主爬虫引擎：协调前沿队列、引擎路由、并发控制、防御协议"""
 
@@ -197,7 +215,7 @@ class Crawler:
             impersonate=self.cfg.protocol_engine_impersonate,
             session_pool=self.session_pool,
             # [FIXED & MODIFIED] v2.10.5 P2-13 接线 max_retries（config"max_retries":5 是死配置，
-            # ProtocolEngine 一直用默认 3）——作者激进风格可配到 5
+            # ProtocolEngine 一直用默认 3）——机主激进风格可配到 5
             max_retries=self.cfg.get("max_retries", 3),
         )
 
@@ -358,12 +376,16 @@ class Crawler:
             min_concurrency=self.cfg.get("adaptive_min_concurrency", 3),
             max_concurrency=self.cfg.get("adaptive_max_concurrency", 100),
         )
-        self._progress = {'done': 0, 'failed': 0, 'pending': 0, 'total': 0}
+        self._progress = {'done': 0, 'failed': 0, 'pending': 0, 'total': 0,
+                              'skipped': 0}   # [v6] 上限跳过的任务另计，别混进 failed
+        # [v2.19.9] 每域视频上限的告警**每域只说一次**：超限的视频可能有很多个，
+        # 逐个告警会把日志刷满（本工程吃过日志噪音的亏）。
+        self._video_cap_warned: set = set()
 
     def _init_enhancements(self):
         # [FIXED & MODIFIED] IntelligentParser 已移除（LLM 模块删除的连带——死代码，从不被调用）
         self.ai_parser = None
-        # [FIXED & MODIFIED] LLM 增强器已整体移除（国内网络延迟 300-500ms/超时阻塞每页处理，作者确认删除）
+        # [FIXED & MODIFIED] LLM 增强器已整体移除（国内网络延迟 300-500ms/超时阻塞每页处理，机主确认删除）
         self._llm_enhancer = None
         # P0 Ultimate Core v4
         from .ultimate_core_v4 import (AutoscaledPool, FullSourceExtractor)
@@ -379,6 +401,8 @@ class Crawler:
 
     def _init_processor(self):
         self.processor = PageProcessor(self)
+        # [v6 M1-c] 身份弹药库（默认关）——必须在 processor 建好之后挂
+        self._init_cookie_armory()
         # 修复：存储所有后台任务的引用，确保关闭时能正确取消
         self._monitor_task = None
         self._adaptive_task = None
@@ -403,6 +427,36 @@ class Crawler:
                 _t.add_done_callback(self._emit_bg.discard)
         except Exception:
             pass
+
+    def _init_cookie_armory(self):
+        """[v6 M1-c] 按站身份弹药库接线 —— **默认关，零影响**。
+
+        开启后：每页抓取前 `acquire_identity(域)` 取一个按站账号（cookie 经
+        `install_cookie_lease` 注入），抓完按结果 `report`（成功回血 / 限流冷却 /
+        网络问题**不惩罚**）。未开启时 `processor.cookie_armory` 保持 None，
+        抓取路径与本特性引入前**完全一致**。
+
+        **失败必须可读**：取不到主密码等情况明确降级为"本次不启用"并告警，
+        不静默、也不假装启用（后者会让用户以为登录态生效了）。
+
+        注：accounts 表落在 `project.get_db_path()`（与 frontier 同库，v6 已收敛
+        schema）。Redis 后端时身份记账仍走本地库——身份是**本机凭据**，不外发。
+        """
+        self.processor.cookie_armory = None
+        if not self.cfg.get("cookie_armory_enabled", False):
+            return
+        try:
+            from .cli import _read_master_password
+            from .cookie_armory import CookieArmory, armory_db_path
+            # [v6 修复] 原来用 `self.project.get_db_path()` —— 那是**任务级**路径
+            # （`<输出目录>\cli_<URL哈希>\frontier.db`，随首个 URL 变），
+            # 而 `cli cookie-add` 存到的是**另一个**库 ⇒ 存的号爬取永远读不到、
+            # 每个新 URL 还是一个空库。改走 `armory_db_path()` 单一实现（用户级固定位置）。
+            self.processor.cookie_armory = CookieArmory(
+                armory_db_path(), _read_master_password())
+            logger.info("身份弹药库已接线（按站账号 acquire/report 生效）")
+        except Exception as e:
+            logger.warning(f"身份弹药库启用失败，本次任务按无身份运行: {e}")
 
     def _init_identity_bundle(self):
         """[v2.17 E-P2] 身份捆绑池（默认关）：出口代理列表 + cookie 组打包为"虚拟用户"。
@@ -446,8 +500,9 @@ class Crawler:
                 # 请求头注入挂钩：_build_headers 按 URL 域从活跃会话取 Cookie（仅在
                 # session_pool 旧通道未给 Cookie 时生效——用户自填 cookies 优先级不变）
                 self.protocol.identity_pool_provider = self._identity_pool
-            except Exception:
-                pass
+            except Exception as e:
+                # 原为 `except Exception: pass`——挂不上则整个身份注入**静默失效**
+                logger.warning(f"身份注入挂钩挂载失败（本次任务将不带身份 cookie）: {e}")
             logger.info(f"身份捆绑池已建（{len(proxies)} 出口 / {len(bundles)} cookie 组）"
                         f"——封锁整包退役开关生效")
         except Exception as e:
@@ -570,9 +625,9 @@ class Crawler:
         await self.protocol.init()
         # [FIXED & MODIFIED] v2.10.4 隐身模块移除：不再自动探测/注入 127.0.0.1:7897 代理
         # ——端口探测误报（本机其他软件占用 7897 时误判 SakuraCat 已开启）导致没开 VPN
-        # 也走坏代理 → 大量失败重试。现在一律直连：作者要隐身时自行开启全局代理（TUN
+        # 也走坏代理 → 大量失败重试。现在一律直连：机主要隐身时自行开启全局代理（TUN
         # 全局路由），引擎无需感知代理存在。
-        logger.info("隐身旁路：引擎直连模式（如需隐身请自行开启全局代理）")
+        logger.info("隐身旁路：引擎直连模式（隐身请由机主自行开启全局代理）")
         # 智能解析器会话初始化（异步）
         if getattr(self, 'ai_parser', None):
             pass  # [FIXED & MODIFIED] ai_parser 已移除（原 init 调用于此删除）
@@ -673,16 +728,32 @@ class Crawler:
         if self.exit_mgr.nodes:
             await self.exit_mgr.start_health_check(interval=60)
 
-        self._progress = {'done': 0, 'failed': 0, 'pending': 0, 'total': 0}
+        self._progress = {'done': 0, 'failed': 0, 'pending': 0, 'total': 0,
+                              'skipped': 0}   # [v6] 上限跳过的任务另计，别混进 failed
+        # [v2.19.9] 每次爬取重新计：每域上限的告警在**本次任务**里只出现一次
+        self._video_cap_warned = set()
         # [v2.17 E-P1-5] 在线指纹更新（默认关；开启后任务启动时尝试一次 curl-cffi
         # FingerprintManager.update_fingerprints——免升级拉最新指纹；失败仅日志不阻塞）
+        # [v6 修复·真机实测] 那个端点 **`api.impersonate.pro` 已经失效**：
+        # 域名还能解析（141.193.154.70），但 TLS 证书与主机名不匹配
+        # ⇒ `SSL: no alternative certificate subject name matches target hostname`。
+        # 这是**上游服务的问题，不是本工程的 bug**，可原来的日志长得像我们的错
+        # （一句干巴巴的 curl 报错），排查时白费功夫。现在把"是什么情况"说清楚。
         try:
             if self.cfg.get("fingerprint_update_enabled"):
                 from curl_cffi import FingerprintManager
                 _n = FingerprintManager().update_fingerprints()
                 logger.info(f"curl_cffi 在线指纹已更新（{_n} 项）")
         except Exception as _fe:
-            logger.warning(f"curl_cffi 在线指纹更新失败（不影响运行）: {_fe}")
+            _msg = str(_fe)
+            if "certificate" in _msg.lower() or "SSL" in _msg:
+                logger.warning(
+                    "curl_cffi 在线指纹更新跳过：上游端点 `api.impersonate.pro` 的 TLS 证书"
+                    "与主机名不匹配（该服务已不在那里）。**这是 curl-cffi 上游的事，不是本工程的问题**，"
+                    "抓取照常。要关掉这条尝试：设置页把「指纹库自动更新」关掉"
+                    "（`fingerprint_update_enabled=False`）。")
+            else:
+                logger.warning(f"curl_cffi 在线指纹更新失败（不影响运行）: {_fe}")
         logger.info("Setup complete.")
 
     async def run(self, seed_urls: List[str]):
@@ -713,7 +784,7 @@ class Crawler:
                 logger.info(f"LLM 链接打分: {len(_llm_seed_scores)} 条（预算 {_m}）")
             except Exception as e:
                 logger.warning(f"LLM 链接打分失败（降级默认打分）: {e}")
-        # [FIXED & MODIFIED] v2.6.2 种子类型检测（作者直链输入的核心通道——任意直链自动分流）：
+        # [FIXED & MODIFIED] v2.6.2 种子类型检测（机主直链输入的核心通道——任意直链自动分流）：
         #   视频/音频/m3u8 → yt-dlp；图片 → 图片通道；其他文件(pdf/zip等) → 文件通道
         #   未识别的普通 URL → 正常爬取解析（全方位数据采集本职）
         _MEDIA_EXT = ('.mp4', '.mkv', '.webm', '.mov', '.avi', '.flv', '.ts',
@@ -738,13 +809,13 @@ class Crawler:
             is_file = any(_u.rstrip('/').endswith(ext) for ext in _FILE_EXT)
             # [FIXED & MODIFIED] v2.9.2 B站视频页种子直连下载：bilibili.com/video/BVxxx 直接
             # 入 yt-dlp 队列（自带 B站 extractor + cookies → 最高画质）——完全不 fetch 页面，
-            # 绕过 GeeTest 风控（作者 GUI 实测：B站视频页走页面解析 → 美国代理 IP 触发
+            # 绕过 GeeTest 风控（机主 GUI 实测：B站视频页走页面解析 → 美国代理 IP 触发
             # geetest 挑战 → 0 pages。直连 + 跳过解析 = 视频页唯一正确链路）
             # [FIXED & MODIFIED] v2.10.0 番剧修复：bilibili.com/bangumi/play/ep 也直连入队
-            # （作者 GUI 输番剧链接爬不到——原检测只认 /video/——番剧走页面解析必风控失败）
+            # （机主 GUI 输番剧链接爬不到——原检测只认 /video/——番剧走页面解析必风控失败）
             # [FIXED & MODIFIED] v2.10.1 多平台视频检测：不再只认 B站——抖音/快手/小红书/
             # YouTube/腾讯/爱奇艺/优酷/西瓜/微博视频等常见平台链接直接入 yt-dlp 队列
-            # （yt-dlp 原生支持 1000+ 站点——作者"只能爬 B站"根因就是检测只认 B站）
+            # （yt-dlp 原生支持 1000+ 站点——机主"只能爬 B站"根因就是检测只认 B站）
             # [FIXED & MODIFIED] v2.10.2 全平台扩充：全流媒体/全多媒体平台（音视频全覆盖）
             is_bili_video = ('bilibili.com/video/' in _u) or ('bilibili.com/bangumi/' in _u) or \
                             ('b23.tv/' in _u and ('BV' in _u or 'ep' in _u)) or \
@@ -797,7 +868,12 @@ class Crawler:
             is_video_platform = is_video_platform or is_bili_video
             if is_image:
                 try:
-                    await self.downloader.download_image(url, referer=url)
+                    # [v6 修复] 原来传的是 `referer=url`（图片自己的地址）——于是 Referer
+                    # 头变成**CDN 自己的主机**（如 i0.hdslb.com），而工程注释写明
+                    # "CDN 校验主站 Referer，无/错 Referer 直接 403"；同时 v2.4.1 想要的
+                    # "CDN 图归到对应主站目录"也没生效。改用唯一实现推导。
+                    from .url_utils import referer_for as _referer_for
+                    await self.downloader.download_image(url, referer=_referer_for(url))
                     logger.info(f"种子为图片直链，已下载: {url[:60]}")
                 except Exception as e:
                     logger.debug(f"image seed: {e}")
@@ -817,6 +893,17 @@ class Crawler:
                     logger.info(f"种子为媒体直链，直接入下载队列: {url[:60]}")
                 except Exception as e:
                     logger.debug(f"media seed enqueue: {e}")
+                continue
+            # [本轮修复·真机日志] **媒体流分片**（`.m4s` 等）既不是页面、也不是可独立
+            # 交付的媒体文件 —— 判据见 `url_utils.is_media_stream_url`（形态判定，
+            # 不是域名黑名单）。不拦的话它会掉进下面最后那条 `frontier.push` 变成
+            # **页面任务**：白抓一轮、必然 403、再白起一次浏览器渲染兜底。
+            # ⚠️ 只拦分片后缀：`.mp4`/`.ts`/`.m3u8` 的直链种子走上面的媒体分支，
+            # "给一个直链就直接下"这条能力**一个字没动**。
+            from .url_utils import is_media_stream_url as _is_stream_seg
+            if _is_stream_seg(url):
+                logger.warning(f"种子是媒体流分片（不是页面，也不是完整媒体文件），"
+                               f"已跳过不入队: {url[:70]}")
                 continue
             # [v2.17 1-2] RSS/Atom 订阅源种子：形态判定 → 解析条目逐条入队（depth=0,
             # 血缘 parent_hash=feed 源 url；失败诚实降级为普通页面通道）
@@ -845,15 +932,47 @@ class Crawler:
             if is_video_platform:
                 # [FIXED & MODIFIED] v2.10.2 视频平台页双通道：视频入下载队列（yt-dlp）
                 # + 页面继续入解析队列（封面/标题/简介/相关推荐链接/图片全采集）——
-                # 作者实测"B站链接只有视频没封面/相关链接"根因：v2.9.2 直连下载跳过了
+                # 机主实测"B站链接只有视频没封面/相关链接"根因：v2.9.2 直连下载跳过了
                 # 页面解析。国内站直连规则已保证 B站页面 fetch 不走代理（无 GeeTest）
-                try:
-                    from urllib.parse import urlparse as _up
-                    _dom = (_up(url).netloc or 'direct').replace('www.', '')
-                    await self.frontier.add_video_download(url, _dom)
-                    logger.info(f"种子为视频平台页 → 入下载队列: {url[:55]}")
-                except Exception as e:
-                    logger.debug(f"video platform enqueue: {e}")
+                #
+                # [v6 修复·机主实测发现] 原此处**没有 `_dl_video` 守卫** —— 于是
+                # `--no-video` / GUI 关掉视频下载时，**种子这条捷径照样下视频**：
+                # 实测跑一个 B站种子，明传 `--no-video`，仍产出 126MB 的 mp4。
+                # 页面解析通道不受影响（封面/标题/相关链接照收），只跳过视频入队。
+                if self._dl_video:
+                    try:
+                        from urllib.parse import urlparse as _up
+                        # [v6 修复·真机实测] **必须清洗**：媒体直链常来自带端口的 CDN
+                        # （实测 `xy111x6x14x207xy.mcdn.bilivideo.cn:8082`），
+                        # 而 Windows 目录名不许有 `:` ⇒ `mkdir` 直接抛
+                        # `[WinError 267] 目录名称无效`，整条视频下不动。
+                        # 走 `url_utils.safe_filename` —— 那是本工程的**统一入口**
+                        # （别处早已用它，唯独这条视频路径漏了）。
+                        from .url_utils import safe_filename as _sfn
+                        _dom = _sfn((_up(url).netloc or 'direct').replace('www.', ''))
+                        # [v6 修复·真机实测] **短链种子不再单独入视频队列**。
+                        # 真机日志（同一视频、两个 URL）：
+                        #   `B站视频入队: https://b23.tv/ybyASFu`                     ← 种子路径
+                        #   `B站视频入队: https://www.bilibili.com/video/BV1obZjBSEpT` ← 页面解析
+                        # ⇒ 队列里两条 ⇒ **整个视频下两遍**（实测两个 82MB 文件：
+                        #   白耗 82MB 带宽 + 164MB 磁盘，日志还重复报"下载完成"）。
+                        # 我先前修的是"**同一个 URL** 重复入队"，管不到"同视频不同 URL"。
+                        #
+                        # 为什么可以安全跳过：紧接着就把该 URL **入了页面解析队列**，
+                        # 页面解析拿到的是**规范 URL**（带 BV 号）—— 那条更好：
+                        # 既不会拼出短链主机的假 URL（见 R6），去重也有稳定的键。
+                        from .url_utils import is_shortener_url
+                        if is_shortener_url(url):
+                            logger.info(
+                                f"种子是短链 → 跳过视频入队（页面解析会用规范 URL 入队）: "
+                                f"{url[:55]}")
+                        else:
+                            await self.frontier.add_video_download(url, _dom)
+                            logger.info(f"种子为视频平台页 → 入下载队列: {url[:55]}")
+                    except Exception as e:
+                        logger.debug(f"video platform enqueue: {e}")
+                else:
+                    logger.info(f"已按「不下载视频」跳过视频入队，仅入页面解析队列: {url[:55]}")
                 await self.frontier.push(url, depth=0, priority=1, force=True)
                 logger.info(f"种子为视频平台页 → 同时入页面解析队列（封面/链接/图片采集）: {url[:55]}")
                 continue
@@ -923,8 +1042,15 @@ class Crawler:
                 # 这里兜的是极端并发写窗口），仍失败再抛。
                 for _attempt in range(3):
                     try:
+                        # [v2.19.9 修复] 批量必须受**总页数上限**约束 —— 原为硬编码 50，
+                        # 而 `max_pages` 是每个任务开始前才查的（`page_processor`）⇒ 一批
+                        # 50 个任务并发启动会把使用者设的上限冲过去（最多 49 页）。
+                        # 真机实测：`-m 3` 跑了 **10 页**。
+                        # 语义与两个边界（额度用完**取满**、至少 1）见 `_batch_cap` docstring。
                         batch = await self.frontier.pop_batch(
-                            50, worker_id=self.worker_id,
+                            _batch_cap(self.project.config.limits.max_pages,
+                                       await self.frontier.count_done_total()),
+                            worker_id=self.worker_id,
                             strategy=getattr(self, "_crawl_strategy", "bfs"))  # [FIXED & MODIFIED] v2.10.5 P1-7 批上限 10→50（原 10 卡死 20 核并发）#[v2.17 E-P1-4] 爬行策略透传（bfs/dfs/bff）
                         break
                     except Exception as _pe:
@@ -1014,7 +1140,7 @@ class Crawler:
         except asyncio.CancelledError:
             logger.info("Cancelled")
         finally:
-            # [FIXED & MODIFIED] v2.6.4 等视频 worker 收尾——作者"空文件夹"真正的根因：
+            # [FIXED & MODIFIED] v2.6.4 等视频 worker 收尾——机主"空文件夹"真正的根因：
             # 页面少时主循环立即 break → shutdown 杀 worker → pending 视频从未下载
             # （vxQTGNB 成功是因为页面多时 worker 轮询期间恰好下载完成，纯运气）
             try:
@@ -1087,6 +1213,31 @@ class Crawler:
             domain = video['domain']
             if await self.frontier.count_video_by_domain(domain) >= \
                     self.project.config.video_settings.max_downloads_per_domain:
+                # [v2.19.9 修复] 原实现这里是一个**裸 `return`** —— 行仍留在
+                # `status='pending'`。后果两层，第二层才是主祸：
+                #  ① **排空阶段白烧满 150 秒**：`crawl()` 的 finally 里
+                #     `while ...: _pv = get_pending_videos(1); if not _pv: break`
+                #     —— 上限视频永远不清空 ⇒ 那个 break **永远不成立**；
+                #  ② 这批视频**永远停在 pending**：进度口径里像"还有没下完的"，
+                #     同一 project 目录续爬时还会被重新捞出来再空转一遍。
+                # 这正是 `page_processor` 早就写下的那条教训（见
+                # `tests/test_skip_vs_failed_and_cookie_truth.py` 第一节）：
+                # **「移除动作是对的、标签是错的」——不把任务从 pending 移走就是死循环**。
+                # 页面路径学会了，**视频路径从来没跟上**，故这里照同一套办：
+                # 记 `skipped`（终态；**不是** failed，更**不是** completed），
+                # 且第一次要把原因说出来（静默丢数据是本工程反复禁掉的做法）。
+                #
+                # 已知边界（如实记录）：worker 每轮取 8 个 ⇒ 超限积压很大时是
+                # 8 个/5 秒地清，理论上仍追不上那 150 秒上限。现实里超限量远小于此，
+                # 故**刻意不做**批量 SQL（那要动 frontier 接口与 Redis 平价守卫）。
+                await self.frontier.update_video_status(video['video_url'], 'skipped')
+                if domain not in self._video_cap_warned:
+                    self._video_cap_warned.add(domain)
+                    logger.warning(
+                        f"视频已达每域上限（{domain} 上限 "
+                        f"{self.project.config.video_settings.max_downloads_per_domain} 个）"
+                        f"——该域**后续视频不再下载**，已记为 skipped（不是失败，"
+                        f"产物里不会有它们）。要改就调 video_settings.max_downloads_per_domain")
                 return
             vurl = video['video_url']
             # [v2.17 E-P2] 视频链路同样走身份捆绑出口（封锁整包退役反馈在完成/失败点）
@@ -1100,8 +1251,23 @@ class Crawler:
                 _dom = _up2(vurl).netloc.replace("www.", "") or "unknown"
             except Exception:
                 _dom = "unknown"
-            _vdir = self.project.video_dir / _dom
+            # [v6 修复] 再兜一层：`_dom` 也可能来自别处（例如 unknown），
+            # 统一安全化，杜绝目录名非法导致的整条下载失败。
+            from .url_utils import safe_filename as _sfn2
+            _vdir = self.project.video_dir / _sfn2(_dom)
             _vdir.mkdir(parents=True, exist_ok=True)
+            # [v6 修复·真机实测] **下载前拍快照** —— 下面的兜底只能认"新出现的文件"。
+            # 原兜底是 `for _f in _vdir.rglob("*"): if _is_real_video_file(_f): break`
+            # —— 它抓的是**目录里第一个**真视频。于是当**本次**产物判定失败时
+            # （真机就是那个 46 字节错误页），它会拿**之前下过的别的视频**当本次成果：
+            #   · 记 `completed`、file_size 记的是别人的大小；
+            #   · 日志刷同一行 `视频下载完成: 021edaa56c4c.mp4 (146.0MB)` 十几次
+            #     —— 机主日志里就是这个症状，而每个"完成"其实都没下成。
+            # 这是**假成功**：比失败更坏，因为它让用户以为东西下好了。
+            try:
+                _pristine = set(_vdir.rglob("*"))
+            except OSError:
+                _pristine = set()
             # Primary: yt-dlp universal downloader
             # [FIXED & MODIFIED] v2.11 画质档接线（preferred_resolution 死配置 → fmt 链）
             # + 副产物开关（字幕/封面/info.json）
@@ -1126,13 +1292,17 @@ class Crawler:
                 except Exception:
                     pass
             if _real is None:
-                # 兜底：_vdir 里找真实视频（yt-dlp 产出但 result 判定失败时）
+                # 兜底：_vdir 里找**本次新出现**的真实视频（yt-dlp 产出但 result 判定失败时）。
+                # [v6 修复] 必须排除下载前就存在的文件 —— 否则会把上一次的成果认成本次的
+                # （真机表现：日志刷同一个旧文件名，而那些"完成"其实都没下成）。
                 try:
                     for _f in _vdir.rglob("*"):
+                        if _f in _pristine:
+                            continue                      # 下载前就在 → 不是本次的产物
                         if _is_real_video_file(_f):
                             _real = _f
                             break
-                except Exception:
+                except OSError:
                     pass
             if _real:
                 await self.frontier.update_video_status(vurl, 'completed', 1.0,
@@ -1176,10 +1346,14 @@ class Crawler:
             _real2 = None
             try:
                 for _f in _vdir.rglob("*"):
+                    # [v6 修复] 同上面的兜底：**只认本次新出现的文件**。
+                    # 否则会拿上一次下好的视频当本次成果（假成功）。
+                    if _f in _pristine:
+                        continue
                     if _is_real_video_file(_f):
                         _real2 = _f
                         break
-            except Exception:
+            except OSError:
                 pass
             if _real2:
                 await self.frontier.update_video_status(vurl, 'completed', 1.0,
@@ -1230,7 +1404,7 @@ class Crawler:
             return
         self._shutdown_done = True
         self._should_stop = True
-        # 恢复原电源计划（爬虫结束后作者日常设置不受影响）
+        # 恢复原电源计划（爬虫结束后机主日常设置不受影响）
         try:
             from .win32_native import restore_power_plan
             restore_power_plan(getattr(self, '_orig_power_plan', None))

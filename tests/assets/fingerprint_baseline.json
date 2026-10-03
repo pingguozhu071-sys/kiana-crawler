@@ -1,0 +1,26 @@
+{
+ "_说明": [
+  "结构指纹的离线基准（M2-c 门禁第 11 项的数据源）。",
+  "这些指纹由 tests/assets/*.html 的**结构**算出（不含文本内容），因此是确定性的、可入库的。",
+  "门禁会重算并与本文件逐一比对：",
+  "  · 样本被替换 / 被截断 → 指纹变 → FAIL（防止样本悄悄失真而无人察觉）；",
+  "  · 指纹算法被改动 → 指纹变 → FAIL（防止结构探针的判据在无声中漂移）。",
+  "若确属有意变更（换了样本、或改了算法），跑 `python tools/fingerprint_baseline.py --write` 重建本文件，",
+  "并在提交信息里写明**为什么**——本文件的意义就是让这种变更不可能悄悄发生。",
+  "注意：本文件只覆盖**离线**部分；在线的真站探测走运行期数据根里的 targets.json（不在仓库内）。"
+ ],
+ "samples": {
+  "163_article_sample.html": 3293689621770325761,
+  "douban_book_sample.html": 987838985784178655,
+  "ifeng_article_sample.html": 1481096887605153049,
+  "kr_article_sample.html": 2531632473318621376,
+  "sina_article_sample.html": 7439844682196086224,
+  "smzdm_post_sample_sample.html": 5563531320655787991,
+  "sohu_article_sample.html": 1559840049214973853,
+  "sspai_article_sample.html": 2131754869514741717,
+  "toutiao_article_sample.html": 5703144007541106515,
+  "wechat_article_sample.html": 3870129890866265369,
+  "weibo_post_sample.html": 2679679446765709215,
+  "zhihu_question_sample.html": 1559549778079180701
+ }
+}

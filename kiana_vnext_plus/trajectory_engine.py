@@ -99,9 +99,9 @@ def lognormal_delay(base: float, sigma: float = 0.55, min_v: float = 0.02) -> fl
         return base
 
 
-_TREMOR_PHASE = random.uniform(0, 6.283)
-
-
+# [v6 清理] 此处原本**连着写了两遍** `_TREMOR_PHASE = random.uniform(0, 6.283)`——
+# 第二遍立即覆盖第一遍，前者是纯死代码（多半是改动时粘贴残留）。
+# 死代码在这里不只是"不好看"：它让人以为相位有两次独立取值，读代码时会绕进去。
 _TREMOR_PHASE = random.uniform(0, 6.283)
 _TREMOR_FREQ = random.uniform(9.0, 11.0)  # 当前震颤频率（连续随机游走，保持波形连续）
 

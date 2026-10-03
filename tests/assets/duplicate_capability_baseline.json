@@ -1,0 +1,415 @@
+{
+ "_说明": [
+  "同一能力多份实现的基线（门禁第 14 项）。",
+  "阻断两类：① **形参不一致**（调用点可能 TypeError）；",
+  "          ② **未登记的同名跨模块实现**（重复要有意识，不许悄悄又抄一份）。",
+  "同名同形参只登记（分叉风险）。合并掉一个就更新基线让它变小。",
+  "新增项必须写明「与谁重复、为何不合并」。"
+ ],
+ "capabilities": {
+  "_tune": {
+   "risk": "signature_mismatch",
+   "sites": [
+    "adaptive_v2.py:92",
+    "ultimate_core_v4.py:39"
+   ]
+  },
+  "record": {
+   "risk": "generic_name",
+   "sites": [
+    "adaptive_v2.py:126",
+    "rate_limiter.py:102",
+    "smart_adaptive.py:27",
+    "smart_adaptive.py:98",
+    "ultimate_core_v4.py:77"
+   ]
+  },
+  "normalize_url": {
+   "risk": "same_signature",
+   "sites": [
+    "adaptive_v2.py:157",
+    "url_utils.py:18"
+   ]
+  },
+  "_simulate_human_behavior": {
+   "risk": "same_signature",
+   "sites": [
+    "captcha_solver_extended.py:1306",
+    "challenge_solver.py:509"
+   ]
+  },
+  "_random_mouse_move": {
+   "risk": "same_signature",
+   "sites": [
+    "captcha_solver_extended.py:1326",
+    "challenge_solver.py:538"
+   ]
+  },
+  "_random_scroll": {
+   "risk": "same_signature",
+   "sites": [
+    "captcha_solver_extended.py:1335",
+    "challenge_solver.py:550"
+   ]
+  },
+  "_hover_random_element": {
+   "risk": "same_signature",
+   "sites": [
+    "captcha_solver_extended.py:1342",
+    "challenge_solver.py:561"
+   ]
+  },
+  "_human_click_at": {
+   "risk": "same_signature",
+   "sites": [
+    "captcha_solver_extended.py:1351",
+    "challenge_solver.py:571"
+   ]
+  },
+  "solve": {
+   "risk": "generic_name",
+   "sites": [
+    "challenge_solver.py:106",
+    "challenge_solver.py:680",
+    "solver_engine.py:991",
+    "solver_service.py:139"
+   ]
+  },
+  "acquire": {
+   "risk": "generic_name",
+   "sites": [
+    "concurrency.py:12",
+    "cookie_armory.py:436",
+    "p1_enhancements.py:155",
+    "rate_limiter.py:68",
+    "solver_engine.py:706"
+   ]
+  },
+  "release": {
+   "risk": "generic_name",
+   "sites": [
+    "concurrency.py:18",
+    "exit_manager.py:480",
+    "p1_enhancements.py:182",
+    "solver_engine.py:761"
+   ]
+  },
+  "to_dict": {
+   "risk": "generic_name",
+   "sites": [
+    "config.py:420",
+    "media_schema.py:90",
+    "session_pool.py:49"
+   ]
+  },
+  "normalize_site": {
+   "risk": "same_signature",
+   "sites": [
+    "cookie_armory.py:130",
+    "cookie_profile.py:176"
+   ]
+  },
+  "_init_db": {
+   "risk": "same_signature",
+   "sites": [
+    "cookie_armory.py:194",
+    "frontier.py:149"
+   ]
+  },
+  "stats": {
+   "risk": "same_signature",
+   "sites": [
+    "defense_protocols.py:205",
+    "session_pool.py:208"
+   ]
+  },
+  "get_domain_stats": {
+   "risk": "same_signature",
+   "sites": [
+    "defense_protocols.py:379",
+    "smart_adaptive.py:185"
+   ]
+  },
+  "_media_of": {
+   "risk": "generic_name",
+   "sites": [
+    "douyin_resolver.py:243",
+    "kuaishou_resolver.py:20",
+    "music163_resolver.py:31",
+    "xhs_resolver.py:23"
+   ]
+  },
+  "resolve": {
+   "risk": "generic_name",
+   "sites": [
+    "douyin_resolver.py:250",
+    "kuaishou_resolver.py:162",
+    "music163_resolver.py:92",
+    "xhs_resolver.py:134"
+   ]
+  },
+  "_walk": {
+   "risk": "signature_mismatch",
+   "sites": [
+    "douyin_resolver.py:207",
+    "ecommerce_parser.py:301"
+   ]
+  },
+  "fetch": {
+   "risk": "signature_mismatch",
+   "sites": [
+    "engine_router.py:39",
+    "protocol_engine.py:228"
+   ]
+  },
+  "save": {
+   "risk": "signature_mismatch",
+   "sites": [
+    "enhancements.py:323",
+    "enhancements.py:340",
+    "fingerprint_probe.py:149"
+   ]
+  },
+  "load": {
+   "risk": "generic_name",
+   "sites": [
+    "enhancements.py:329",
+    "enhancements.py:343",
+    "fingerprint_probe.py:137",
+    "site_rules.py:128"
+   ]
+  },
+  "init_async": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:260",
+    "redis_frontier.py:67"
+   ]
+  },
+  "push": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:323",
+    "redis_frontier.py:93"
+   ]
+  },
+  "write_page": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:347",
+    "redis_frontier.py:255"
+   ]
+  },
+  "mark_duplicate": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:357",
+    "redis_frontier.py:305"
+   ]
+  },
+  "set_domain_cooldown": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:363",
+    "redis_frontier.py:311"
+   ]
+  },
+  "clear_domain_cooldown": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:368",
+    "redis_frontier.py:314"
+   ]
+  },
+  "load_active_cooldowns": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:371",
+    "redis_frontier.py:317"
+   ]
+  },
+  "mark_done": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:401",
+    "redis_frontier.py:177"
+   ]
+  },
+  "heartbeat_lease": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:416",
+    "redis_frontier.py:200"
+   ]
+  },
+  "mark_done_checked": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:434",
+    "redis_frontier.py:194"
+   ]
+  },
+  "mark_failed": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:466",
+    "redis_frontier.py:205"
+   ]
+  },
+  "write_extracted": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:505",
+    "redis_frontier.py:258"
+   ]
+  },
+  "write_error": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:508",
+    "redis_frontier.py:261"
+   ]
+  },
+  "add_video_download": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:566",
+    "redis_frontier.py:320"
+   ]
+  },
+  "update_video_status": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:600",
+    "redis_frontier.py:323"
+   ]
+  },
+  "get_video_stats": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:608",
+    "redis_frontier.py:326"
+   ]
+  },
+  "pop_batch": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:621",
+    "redis_frontier.py:137"
+   ]
+  },
+  "is_visited": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:667",
+    "redis_frontier.py:264"
+   ]
+  },
+  "get_counts": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:676",
+    "redis_frontier.py:272"
+   ]
+  },
+  "get_pending_videos": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:682",
+    "redis_frontier.py:281"
+   ]
+  },
+  "count_video_by_domain": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:689",
+    "redis_frontier.py:284"
+   ]
+  },
+  "count_done_by_domain": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:697",
+    "redis_frontier.py:287"
+   ]
+  },
+  "count_done_total": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:705",
+    "redis_frontier.py:308"
+   ]
+  },
+  "adjust_priority": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:714",
+    "redis_frontier.py:329"
+   ]
+  },
+  "flush": {
+   "risk": "same_signature",
+   "sites": [
+    "frontier.py:732",
+    "redis_frontier.py:301"
+   ]
+  },
+  "_fetch_html": {
+   "risk": "same_signature",
+   "sites": [
+    "kuaishou_resolver.py:105",
+    "xhs_resolver.py:42"
+   ]
+  },
+  "walk": {
+   "risk": "same_signature",
+   "sites": [
+    "kuaishou_resolver.py:138",
+    "xhs_resolver.py:108"
+   ]
+  },
+  "init_session": {
+   "risk": "same_signature",
+   "sites": [
+    "m3u8_downloader.py:33",
+    "media_downloader.py:29"
+   ]
+  },
+  "process": {
+   "risk": "signature_mismatch",
+   "sites": [
+    "p1_enhancements.py:120",
+    "wallpaper.py:90"
+   ]
+  },
+  "init": {
+   "risk": "generic_name",
+   "sites": [
+    "protocol_engine.py:92",
+    "solver_engine.py:321",
+    "universal_downloader.py:693"
+   ]
+  },
+  "_domain_of": {
+   "risk": "same_signature",
+   "sites": [
+    "rate_limiter.py:57",
+    "session_pool.py:69"
+   ]
+  },
+  "invalidate": {
+   "risk": "signature_mismatch",
+   "sites": [
+    "session_pool.py:101",
+    "site_rules.py:144"
+   ]
+  },
+  "available": {
+   "risk": "same_signature",
+   "sites": [
+    "slider_vision.py:25",
+    "wallpaper.py:25"
+   ]
+  }
+ }
+}

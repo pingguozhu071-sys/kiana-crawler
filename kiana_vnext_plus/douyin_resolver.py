@@ -28,17 +28,17 @@ def _load_cookies():
         else:
             srcs = [os.environ.get("KIANA_COOKIE_FILE") or
                     str(pathlib.Path(os.environ["LOCALAPPDATA"]) / "KianaVnextPlus" / "cookies.txt")]
+        # [v6] 域过滤保留在本处（"douyin" 子串、大小写敏感）；行解析归 parse_netscape_cookies
+        from .cookie_utils import parse_netscape_cookies
         pairs = []
         for kf in srcs:
             kfp = pathlib.Path(kf)
             if not kfp.exists():
                 continue
-            for line in kfp.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split("\t")
-                if len(parts) >= 7 and "douyin" in parts[0]:
-                    pairs.append(f"{parts[5]}={parts[6]}")
+            text = kfp.read_text(encoding="utf-8-sig", errors="ignore")
+            for c in parse_netscape_cookies(text):
+                if "douyin" in str(c["domain"]):
+                    pairs.append(f"{c['name']}={c['value']}")
         return "; ".join(pairs)
     except Exception:
         return ""

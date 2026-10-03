@@ -17,7 +17,7 @@ from collections import defaultdict
 from pathlib import Path
 logger=logging.getLogger(__name__)
 
-# ═══ P1-1: 路由系统（按模式把 URL 分派给不同处理器）═══
+# ═══ P1-1: Router routing system (Crawlee-style) ═══
 class Router:
     """Route URLs to different handlers based on pattern matching"""
     def __init__(self):
@@ -60,7 +60,7 @@ class Router:
                 return label
         return 'PAGE'
 
-# ═══ P1-2: 声明式条目管道（字段声明 + 逐级处理）═══
+# ═══ P1-2: Declarative Item Pipeline (Scrapy-style) ═══
 @dataclass
 class PipelineItem:
     raw: dict
@@ -237,6 +237,29 @@ class HttpCache:
             try:
                 meta=json.loads(meta_file.read_text(encoding='utf-8'))
                 age=time.time()-meta.get('fetched_at',0)
+                # [v6 修复·R6 根因 B 遗留] **让修复前写入的旧条目自愈。**
+                #
+                # `final_url` 是本轮才加进 meta 的（此前**每次写盘都被丢弃**）。
+                # 修复**之前**写入的条目没有这个字段 ⇒ 缓存命中时 `_final_url_of`
+                # 读不到基址 ⇒ 整页相对链接被拼回短链主机。
+                # 只修写入端的话，这些旧条目会**继续污染到 TTL 过期为止**
+                # （机主机器上实测有 169 个）。
+                #
+                # 判据**刻意收窄**，只对"**请求地址本身是短链**"的条目这样做：
+                #   · 非短链站点**不需要** final_url 也能正确解析相对链接
+                #     （基址 == 请求地址），把它们当 miss 只会白白降低命中率；
+                #   · 短链站点**一旦缺** final_url，基址必然错 —— 宁可重抓一次。
+                # 既不误伤正常条目，又让脏条目第一次被访问时自动失效。
+                if 'final_url' not in meta:
+                    try:
+                        from .url_utils import is_shortener_url
+                        _need_final = bool(is_shortener_url(url))
+                    except Exception:
+                        _need_final = False
+                    if _need_final:
+                        logger.debug("缓存条目缺 final_url 且请求是短链 → 当作未命中重取: %s",
+                                     url[:60])
+                        return None
                 if age<self.ttl:  # [v2.16] TTL 可配（默认 1h）
                     return {'content':content_file.read_text(encoding='utf-8'),'meta':meta}
                 # [FIXED & MODIFIED] v2.15 阶段2 stale 返回（真增量爬取）：过期条目带
@@ -256,8 +279,19 @@ class HttpCache:
             _disp_url = sanitize_url(url)
         except Exception:
             _disp_url = url
+        # [v6 修复·R6 根因 B] meta 原来是**固定四键白名单**，`final_url` **每次写盘都被丢弃**。
+        # `page_processor` 明明在传（:707 的 200 分支、:646 的 304 分支都传了），
+        # 而 `_final_url_of` 的第三个来源 `(cached.get("meta") or {}).get("final_url")`
+        # **永远读不到** ⇒ 缓存命中时基址只能退回请求 URL。
+        #
+        # ⚠️ 顺带纠正一个**前人结论**：曾判断"旧缓存条目没有该字段"，
+        # 实测**新写入的也永远不会有**（磁盘 183 个 meta 里 0 个含 final_url，
+        # 包括当天由现有代码写入的）。所以**清缓存不可能修好这条**。
         meta={'url':_disp_url,'fetched_at':time.time(),'etag':str(headers.get('etag','')) if headers else '',
-              'last_modified':str(headers.get('last-modified','')) if headers else ''}
+              'last_modified':str(headers.get('last-modified','')) if headers else '',
+              # 终到地址 —— 缓存命中时它是**唯一**能还原相对链接基址的东西，
+              # 丢了就会把整页相对链接拼到短链主机上。
+              'final_url':str((headers or {}).get('final_url', '') or '')}
         (self.dir/f'{key}.meta').write_text(json.dumps(meta, ensure_ascii=False),encoding='utf-8')
         self._enforce_cap()
 
@@ -274,7 +308,7 @@ class HttpCache:
         except Exception:
             pass
 
-# ═══ P1-7: 信号总线 + 生命周期钩子 ═══
+# ═══ P1-7: Signal System + Lifecycle Hooks (Scrapy + pyspider) ═══
 class SignalBus:
     """Publish-subscribe event bus for crawler lifecycle"""
     def __init__(self):

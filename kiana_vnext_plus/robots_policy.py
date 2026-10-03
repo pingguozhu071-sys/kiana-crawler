@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """robots.txt 合规件 robots_policy.py（v2.17 E-P1-1）
 
-robots.txt 的解析与匹配为公开协议规则（RFC 9309），本工程独立实现——
-为适配本工程缓存与请求闸而重写：缓存条目走 HTTP 磁盘缓存层，
+参考 Scrapy robotstxt.py 与 Colly robotsMap（Apache-2.0/BSD 许可，逻辑可移植——
+本实现为适配本工程 HttpCache/请求闸的重写：缓存条目走 HTTP 磁盘缓存层，
 请求走 url_utils.safe_urlopen 白名单（同源 robots 域名，无 SSRF 面）。
 
 语义：

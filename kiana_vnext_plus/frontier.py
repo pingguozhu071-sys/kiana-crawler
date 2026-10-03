@@ -1,11 +1,67 @@
 import time
 import asyncio
+import random
 import sqlite3
 import aiosqlite
 import logging
-from .url_utils import url_hash, normalize_url, extract_domain
+from .url_utils import (url_hash, normalize_url, extract_domain,
+                        clean_url_entity_residue, is_media_stream_url)
 
 logger = logging.getLogger(__name__)
+
+# ════════════════════════════════════════════════════════════════
+# [v6] 重试策略的**唯一实现** —— 两个 frontier 后端（SQLite / Redis）共用
+#
+#   背景：同一段 `mark_failed` 在两个后端里**各写了一份**，于是 SQLite 上历次修好的
+#   三件事在 Redis 后端**全部缺失**（本轮逐条比对确认）：
+#     ① 指数+抖动退避（v2.14"重试风暴"修复）→ Redis 仍是固定 delay，
+#        等于退回"同域 50 任务 30s 后同步重新出队形成周期性打波"的那个版本；
+#     ② 限流不消耗 retry_count（v2.17 E-P1-3）→ Redis 忽略 `throttled`，
+#        于是"3 次限流即 dead"这个已被修掉的 bug 在 Redis 上仍在；
+#     ③ `AND status != 'done'` 守卫（v2.19.6 看门狗修复）→ Redis 无此守卫，
+#        会把**已完成**的任务打回 retry（整页重爬 + 重复导出）。
+#
+#   抽成**纯函数**（不做任何 I/O）之后，"再次分叉"必须发生在同一个地方，
+#   从而可以被测试直接挡住——这比"这次记得同步改两边"可靠。
+# ════════════════════════════════════════════════════════════════
+THROTTLE_MAX = 10           # 连续限流上限：超过转 dead（否则任务可能永驻 retry）
+RETRY_BACKOFF_CAP = 600.0   # 退避上限（秒）
+
+
+def next_retry_state(retry, retry_count, max_retries, throttle_count=0, delay=30,
+                     throttled=False, rng=None) -> dict:
+    """算出一次失败之后的状态。**纯函数，无 I/O。**
+
+    返回 `{"status", "retry_count", "throttle_count", "scheduled_at"}`。
+    `scheduled_at is None` 表示不排期（即 dead）。
+
+    语义（与 SQLite 后端既有行为逐条对齐）：
+      · `retry=False` 或 `retry_count >= max_retries` → **dead**；
+      · `throttled=True` → **不消耗** `retry_count`，改记 `throttle_count`；
+        连续限流达 `THROTTLE_MAX` → dead 并把计数清零；
+      · 退避 = `delay × 1.8^retry_count`（封顶 600s）× `U(0.7, 1.3)` 抖动。
+    """
+    _rng = rng or random
+    rc = int(retry_count or 0)
+    mx = int(max_retries or 0)
+    tc = int(throttle_count or 0)
+
+    if not retry or rc >= mx:
+        # 与 SQLite 路径一致：普通 dead 保留 retry_count；限流达上限则清零 throttle_count
+        return {"status": "dead", "retry_count": rc,
+                "throttle_count": 0 if tc else tc, "scheduled_at": None}
+
+    _exp = min(float(delay) * (1.8 ** rc), RETRY_BACKOFF_CAP)
+    scheduled = time.time() + _exp * _rng.uniform(0.7, 1.3)
+
+    if throttled:
+        if tc + 1 >= THROTTLE_MAX:
+            return {"status": "dead", "retry_count": rc,
+                    "throttle_count": 0, "scheduled_at": None}
+        return {"status": "retry", "retry_count": rc,
+                "throttle_count": tc + 1, "scheduled_at": scheduled}
+    return {"status": "retry", "retry_count": rc + 1,
+            "throttle_count": tc, "scheduled_at": scheduled}
 
 # [v2.17 E-P1-4] 爬行策略：ORDER BY 三档（bfs 默认=现状；dfs 后入先出；bff 按 priority 降序，
 # priority 已表达相关度——三档只改排序，不动租约/CAS 语义）
@@ -15,6 +71,70 @@ _ORDER_BY = {
     "bff": "ORDER BY priority DESC, scheduled_at",
 }
 LEASE_TIMEOUT = 300
+
+# 当前 schema 版本（迁移链的终点）。新增迁移时：改这里 + 在 _migrate 追加 `if version < N` 块。
+# 测试断言一律引用本常量——v6 落地时就有两处旧用例把 5 硬编码进断言而需要返工，
+# "版本号散落在用例里"是迁移类改动的固定返工源。
+SCHEMA_VERSION = 6
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# accounts 表的**唯一** schema 源（v6 收敛）
+#
+# 背景：本表建表语句此前在 frontier.py 与 cookie_armory.py **各有一份、逐字相同**。
+# 两份都写 CREATE TABLE IF NOT EXISTS，所以"新库谁先打开都能建表"没问题；
+# 但**加列**时只改一处，另一处打开的库表结构就落后 → 运行时"no such column"。
+# 现在建表与加列都收敛到本函数，两个入口都调它 → **打开顺序无关**。
+#
+# 密文约定：state_blob 由 cookie_armory 用 Fernet 加密，**明文 cookies 绝不入库**。
+# ══════════════════════════════════════════════════════════════════════════
+
+ACCOUNTS_DDL = """CREATE TABLE IF NOT EXISTS accounts (
+    site TEXT, name TEXT, state_blob TEXT, health_score REAL DEFAULT 1.0,
+    cooldown_until REAL DEFAULT 0, success_count INTEGER DEFAULT 0,
+    fail_count INTEGER DEFAULT 0, updated_at REAL,
+    quota_window_start INTEGER, quota_used INTEGER DEFAULT 0, quota_limit INTEGER DEFAULT 0,
+    last_error_kind TEXT, last_error_at INTEGER, last_ok_at INTEGER,
+    identity_fingerprint TEXT,
+    PRIMARY KEY (site, name))"""
+
+
+def ensure_accounts_schema(conn):
+    """幂等：建 accounts 表 + 补齐 v6 新列。**不推进 user_version**
+    （版本号统一由 `_migrate` 推，避免两个入口各写一份版本语义）。
+
+    新增列默认值刻意留 NULL / 0 —— **不用非空默认值伪装成"有过记录"**：
+    `last_error_kind` 为 NULL 才表示"从未失败过"，与"失败过但原因为空"可区分。
+
+    返回本次实际新增的列名列表（供日志与断言用；已存在则为空列表）。
+    """
+    conn.execute(ACCOUNTS_DDL)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(accounts)")}
+    added = []
+    # v6：身份层所需 —— 额度记账（按 站×身份，限流是每身份各自的）、失败原因、
+    # 最近成功时间（健康检查 TTL 判据）、绑定的指纹标识。
+    if "quota_window_start" not in cols:
+        conn.execute("ALTER TABLE accounts ADD COLUMN quota_window_start INTEGER")
+        added.append("quota_window_start")
+    if "quota_used" not in cols:
+        conn.execute("ALTER TABLE accounts ADD COLUMN quota_used INTEGER DEFAULT 0")
+        added.append("quota_used")
+    if "quota_limit" not in cols:
+        conn.execute("ALTER TABLE accounts ADD COLUMN quota_limit INTEGER DEFAULT 0")
+        added.append("quota_limit")
+    if "last_error_kind" not in cols:
+        conn.execute("ALTER TABLE accounts ADD COLUMN last_error_kind TEXT")
+        added.append("last_error_kind")
+    if "last_error_at" not in cols:
+        conn.execute("ALTER TABLE accounts ADD COLUMN last_error_at INTEGER")
+        added.append("last_error_at")
+    if "last_ok_at" not in cols:
+        conn.execute("ALTER TABLE accounts ADD COLUMN last_ok_at INTEGER")
+        added.append("last_ok_at")
+    if "identity_fingerprint" not in cols:
+        conn.execute("ALTER TABLE accounts ADD COLUMN identity_fingerprint TEXT")
+        added.append("identity_fingerprint")
+    return added
 
 
 class FrontierDB:
@@ -28,7 +148,16 @@ class FrontierDB:
         self._init_db()
 
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
+        # [v2.19.9 修复] 注意这个 `with` **只管事务、不管关闭** —— Python 的经典坑。
+        # 原来写的是 `with sqlite3.connect(...) as conn:`，连接只能靠 refcount 回收，
+        # 而 sqlite3 连接内部有引用环 ⇒ **只有 gc.collect() 才会真的释放**。
+        # 三步对照实测（不是推理）：① 纯 stdlib 的 sqlite3 关掉即可删文件 ⇒ 排除环境；
+        # ② `FrontierDB(path)` **一构造**该文件就删不掉（Windows WinError 32）；
+        # ③ `gc.collect()` 之后又可删 ⇒ 持有者就是这条连接。
+        # 对本工程无可见危害（DB 从不删/移），但会坑测试与任何"清理/迁移 DB"的工具。
+        # 故：连接拿到手 → `with conn:` 原样保留事务语义 → 函数末尾**显式 close()**。
+        conn = sqlite3.connect(self.db_path)
+        with conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA cache_size=-131072")   # 128MB (15.4GB 调低)
@@ -58,11 +187,9 @@ class FrontierDB:
                 key TEXT PRIMARY KEY, value TEXT)""")
             # [FIXED & MODIFIED] v2.13 阶段5 Cookie 弹药库表（state_blob 由 cookie_armory
             # 用 Fernet 加密——明文 cookies 绝不入库；实际读写走 armory 独立连接）
-            conn.execute("""CREATE TABLE IF NOT EXISTS accounts (
-                site TEXT, name TEXT, state_blob TEXT, health_score REAL DEFAULT 1.0,
-                cooldown_until REAL DEFAULT 0, success_count INTEGER DEFAULT 0,
-                fail_count INTEGER DEFAULT 0, updated_at REAL,
-                PRIMARY KEY (site, name))""")
+            # [v6 收敛] 建表与加列统一走 ensure_accounts_schema（此前的重复 DDL 已删）——
+            # 先确保表存在再加列，与 user_version 无关，故打开顺序不影响结果。
+            ensure_accounts_schema(conn)
             # [FIXED & MODIFIED] v2.14 阶段2 索引补齐（深查：count_done_by_domain 每任务
             # 全表扫描 O(N²)、video_downloads 每 5s 全表轮询、errors 无索引全表排序）
             conn.execute("CREATE INDEX IF NOT EXISTS idx_frontier_domain_status ON frontier(domain, status)")
@@ -70,6 +197,10 @@ class FrontierDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_errors_ts ON errors(timestamp)")
             self._migrate(conn)
             conn.commit()
+        # [v2.19.9 修复] **显式关闭**（`with conn:` 只管事务、不管连接 —— 见开头注释）。
+        # 必须放在 `with` **外面**：放里面会让 `__exit__` 的 commit 撞上已关闭的库
+        # （`sqlite3.ProgrammingError: Cannot operate on a closed database`）。
+        conn.close()
 
     @staticmethod
     def _migrate(conn):
@@ -129,6 +260,16 @@ class FrontierDB:
                 conn.execute("ALTER TABLE frontier ADD COLUMN throttle_count INTEGER DEFAULT 0")
             conn.execute("PRAGMA user_version = 5")
             logger.info("DB 迁移 v4→v5：frontier 补 throttle_count（连续限流兜底）")
+        if version < 6:
+            # [v6] 身份层落库：accounts 补额度记账 / 失败原因 / 最近成功时间 / 指纹标识。
+            # 与 v5 同理走幂等 ALTER（CREATE IF NOT EXISTS 补不了列）；建表与加列都已收敛到
+            # ensure_accounts_schema，故 CookieArmory 与 FrontierDB **谁先打开都一样**。
+            # 存量行由 ALTER 的默认值回填：quota_used=0、last_error_kind=NULL
+            # （NULL 表示"从未失败过"，刻意不用非空默认值伪装成"有过记录"）。
+            added = ensure_accounts_schema(conn)
+            # PRAGMA 不支持参数绑定；此处取模块级 int 常量，无注入面
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            logger.info(f"DB 迁移 v5→v6：accounts 补列 {added or '（已是最新）'}")
 
     async def init_async(self):
         self._read_conn = await aiosqlite.connect(self.db_path)
@@ -194,6 +335,27 @@ class FrontierDB:
                     self._write_queue.task_done()
 
     async def push(self, url, depth=0, priority=5, force=False, parent_hash=None):
+        # ════════════════════════════════════════════════════════════════════
+        # [本轮修复·真机日志] **媒体流分片结构上不可能变成"页面任务"。**
+        #
+        # 真机病象：B站视频页解析出的 DASH 轨道分片（`...upgcxcode/.../xxx-1-30032.m4s`）
+        # 被当成待抓 URL，每一条都白跑一轮、白重试、白刷屏。
+        #
+        # **为什么闸设在这里**：本方法是**页面队列的主写入口**（SQLite 全路径 + Redis
+        # 降级路径都经过它）。页面入队的调用点有 6 处（种子 / feed 条目 / sitemap /
+        # 出链 / 规则翻页 / 短链规范化），在 6 处各写一遍闸 = 少写一处就静默漏一条路径
+        # —— 那正是本工程"同一能力多份实现"的固定翻车方式。
+        # ⚠️ 如实说明边界：**Redis 直连路径不过这里**（`RedisFrontier.push` 非降级时
+        # 自己 zadd/hset），所以那道闸在 `redis_frontier.push` 上**另有一处**——
+        # 判据仍是同一个 `url_utils.is_media_stream_url`，只是决策点随后端各一个。
+        #
+        # 判据来自 `url_utils.is_media_stream_url`（**唯一实现**，基于 URL 形态而非
+        # 域名黑名单）；判据本身很窄，只拦"业界只用作分片"的后缀 ——
+        # 真实视频页、图片 CDN、`.mp4`/`.ts`/`.m3u8` 直链全部放行。
+        # ════════════════════════════════════════════════════════════════════
+        if is_media_stream_url(url):
+            logger.debug(f"页面入队拦截（媒体流分片不是页面）: {str(url)[:80]}")
+            return
         # [v2.19.7 安全·扫描发现·**刻意不脱敏**] normalized_url 是"稍后要再请求一次"的
         # 功能数据（page_processor 直接拿它发请求）。若在此跑 sanitize_url 把 ?token=/
         # session= 的值抹成 [REDACTED]，续爬会 403 → 任务永久卡死。敏感 URL 的收口放在
@@ -348,44 +510,32 @@ class FrontierDB:
         if not row:
             return
         retry_count, max_retries, throttle_count = row[0], row[1], (row[2] if len(row) > 2 else 0)
-        # 修复：off-by-one，原 retry_count+1 < max_retries 导致 max_retries=3 实际只允许 2 次重试
-        if retry and retry_count < max_retries:
-            # [FIXED & MODIFIED] v2.14 重试风暴修复（深查 B 级）：原固定 delay=30 且无抖动
-            # → 同域 50 任务全失败时 30s 后同步重新出队形成周期性打波。改指数+抖动：
-            # 30 × 1.8^retry_count × U(0.7,1.3)
-            import random as _rnd
-            _exp = min(float(delay) * (1.8 ** retry_count), 600.0)
-            _jittered = _exp * _rnd.uniform(0.7, 1.3)
-            if throttled:
-                # [v2.17 E-P1-3] 限流≠重试：429/503 属"暂态限流"——冷却等待但不消耗
-                # retry_count（原实现 3 次限流即 dead；限流不是真失败，不应耗尽重试）
-                # [v2.19 P1] 连续限流兜底：不消耗 retry_count 的代价是任务可能**永驻 retry**
-                # → 主循环退出条件（pending+retry==0）永不成立。故用独立计数，达上限转 dead。
-                # [v2.19.6 修复·审查发现] 三条 UPDATE 统一加 `AND status != 'done'` 守卫：
-                # 看门狗（page_timeout，本轮由 0 改为默认 300）在页面**已赢 CAS（status=done）**
-                # 但仍在持久化阶段时取消任务 → 原实现会把 done 打回 retry → 整页重爬 +
-                # 重复导出，正是 CAS 前置想消灭的后果。
-                _THROTTLE_MAX = 10
-                if int(throttle_count or 0) + 1 >= _THROTTLE_MAX:
-                    logger.warning(f"连续限流达上限({_THROTTLE_MAX})转 dead: {url_hash}")
-                    await self._write_queue.put((
-                        "UPDATE frontier SET status='dead', throttle_count=0 "
-                        "WHERE url_hash=? AND status != 'done'",
-                        (url_hash,)))
-                else:
-                    await self._write_queue.put((
-                        "UPDATE frontier SET status='retry', throttle_count=COALESCE(throttle_count,0)+1, "
-                        "scheduled_at=? WHERE url_hash=? AND status != 'done'",
-                        (time.time() + _jittered, url_hash)))
+        # [v6] 策略改由 `next_retry_state` **唯一实现**给出（原先这段逻辑与
+        # redis_frontier 各写一份，导致后者漏掉本处历次修复）。
+        st = next_retry_state(retry, retry_count, max_retries, throttle_count,
+                              delay=delay, throttled=throttled)
+        if st["status"] == "dead":
+            if throttled and int(throttle_count or 0) + 1 >= THROTTLE_MAX:
+                logger.warning(f"连续限流达上限({THROTTLE_MAX})转 dead: {url_hash}")
+                await self._write_queue.put((
+                    "UPDATE frontier SET status='dead', throttle_count=0 "
+                    "WHERE url_hash=? AND status != 'done'",
+                    (url_hash,)))
             else:
                 await self._write_queue.put((
-                    "UPDATE frontier SET status='retry', retry_count=retry_count+1, scheduled_at=? "
-                    "WHERE url_hash=? AND status != 'done'",
-                    (time.time() + _jittered, url_hash)))
+                    "UPDATE frontier SET status='dead' WHERE url_hash=? AND status != 'done'",
+                    (url_hash,)))
+        elif st["throttle_count"] > int(throttle_count or 0):
+            # 限流≠重试：只记 throttle_count，**不动 retry_count**
+            await self._write_queue.put((
+                "UPDATE frontier SET status='retry', throttle_count=COALESCE(throttle_count,0)+1, "
+                "scheduled_at=? WHERE url_hash=? AND status != 'done'",
+                (st["scheduled_at"], url_hash)))
         else:
             await self._write_queue.put((
-                "UPDATE frontier SET status='dead' WHERE url_hash=? AND status != 'done'",
-                (url_hash,)))
+                "UPDATE frontier SET status='retry', retry_count=retry_count+1, scheduled_at=? "
+                "WHERE url_hash=? AND status != 'done'",
+                (st["scheduled_at"], url_hash)))
 
     async def write_extracted(self, url_hash, data_json):
         await self._write_queue.put(("INSERT OR REPLACE INTO extracted VALUES (?,?)", (url_hash, data_json)))
@@ -422,15 +572,64 @@ class FrontierDB:
             logger.debug(f"get_recent_errors failed: {e}")
             return []
 
+    async def errors_by_platform_code(self, limit: int = 50) -> list:
+        """按 `(platform, code)` 聚合错误 → `[{platform, code, count, last_ts}]`（count 降序）。
+
+        [v6 M1-e] `docs/ARCHITECTURE.md` 与 `write_error` 的注释都写着"结构化列可
+        GROUP BY、聚合分析不再靠正则切字符串"——但**全仓没有一条 SQL 真的做这件事**
+        （只有列定义与写入路径）。没有它，"哪个平台什么码最多"只能人肉翻日志。
+
+        空的 platform/code 归到 `'(未标注)'`，避免一堆空串混在一起看不出问题。
+        """
+        if self._read_conn is None:
+            return []
+        try:
+            async with self._read_conn.execute(
+                    "SELECT COALESCE(NULLIF(platform,''), '(未标注)') AS platform, "
+                    "       COALESCE(NULLIF(code,''), '(未标注)') AS code, "
+                    "       COUNT(*) AS count, MAX(timestamp) AS last_ts "
+                    "FROM errors "
+                    "GROUP BY COALESCE(NULLIF(platform,''), '(未标注)'), "
+                    "         COALESCE(NULLIF(code,''), '(未标注)') "
+                    "ORDER BY count DESC, last_ts DESC LIMIT ?", (int(limit),)) as cur:
+                return [dict(r) for r in await cur.fetchall()]
+        except Exception as e:
+            # 读侧失败不静默：这是审计视图的数据源，悄悄返回空表会被当成"没有错误"
+            logger.warning(f"errors_by_platform_code 失败: {e}")
+            return []
+
     async def add_video_download(self, video_url, domain):
+        # [v6 修复·R4 收口] **HTML 实体/百分号编码的残渣在这里统一清掉。**
+        #
+        # 真机日志（机主 2026-10-03 那次 GUI 抓取）：
+        #     `B站视频入队: https://www.bilibili.com/video/BV1PSL96YEwp?amp%3Btrackid=we`
+        # `amp;` 是 `&amp;` 被砍掉首字符、`;` 又被百分号编码成 `%3B` 的产物。
+        # 这类 URL **能下**（多一个无用参数），但会被当成**独立的下载键** ——
+        # 同一个视频可能因此入队两次、或与规范 URL 各下一份（本工程已经吃过这个亏）。
+        #
+        # **为什么放在这里**：入队点有三处（`crawler` 种子路径 + `page_processor` 两条），
+        # 按"**单一实现**"纪律，清洗该收口在**唯一的写库入口**，而不是三个调用点各写一遍。
+        # 这与本函数已有的"URL 是下载钥匙、绝不脱敏"是**两件事**：
+        # 那个说的是"不抹签名参数"，这里说的是"修掉解析残渣"，互不冲突。
+        if isinstance(video_url, str) and video_url:
+            video_url = clean_url_entity_residue(video_url)
         # [v2.19.7 安全·扫描发现·**刻意不脱敏**] 与 frontier.push 同理：video_url 是下载
         # 任务的**钥匙**（签名 CDN 链接），update_video_status 也按它做 WHERE 匹配。抹掉
         # 签名参数 = 视频永远下不动，还会让状态更新匹配不到行。敏感 URL 收口在导出侧。
         # [FIXED & MODIFIED] v2.6.4 UPSERT 重置 pending：原 INSERT OR IGNORE 导致历史 completed/failed
-        # 记录阻塞重下（作者空文件夹根因之一：误标 completed 后视频永远不再下载）
+        # 记录阻塞重下（机主空文件夹根因之一：误标 completed 后视频永远不再下载）
+        #
+        # [v6 修复·真机实测发现] 但"无条件重置"有副作用：**同一个 URL 在一次任务里被入队两次**
+        # 时（B站种子的"双通道"——`crawler` 种子路径与 `page_processor` 页面路径**各入队一次**），
+        # 第二次会把**正在进行中/已完成**的行又踢回 pending → **整段视频重下一遍**。
+        # 实测：抓 1 个爱言叶（82MB），在 `b23.tv/` 与 `m.bilibili.com/` 下**各下一份**，白耗 82MB。
+        # 现加 `WHERE status NOT IN ('pending','downloading')`：**只在"不在进行中"时才重置**
+        # —— 既保留 v2.6.4 的"失败/误标后可重下"，又不再重复下载。
         await self._write_queue.put((
             "INSERT INTO video_downloads (video_url, domain, status, created_at) VALUES (?,?,?,?) "
-            "ON CONFLICT(video_url) DO UPDATE SET status='pending', progress=0, file_path=NULL, created_at=excluded.created_at",
+            "ON CONFLICT(video_url) DO UPDATE SET status='pending', progress=0, "
+            "file_path=NULL, created_at=excluded.created_at "
+            "WHERE video_downloads.status NOT IN ('pending','downloading')",
             (video_url, domain, 'pending', time.time())))
 
     async def update_video_status(self, video_url, status, progress=0.0, file_path=None, file_size=None):

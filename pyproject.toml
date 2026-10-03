@@ -1,6 +1,6 @@
 [project]
 name = "kiana-vnext-plus"
-version = "2.19.8"
+version = "2.19.9"
 description = "Kiana Vnext Plus - 全能数据采集引擎"
 requires-python = ">=3.11"
 

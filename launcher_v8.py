@@ -96,6 +96,79 @@ def save_captcha_keys(keys: dict) -> bool:
         return False
 
 
+# ─────────────────────────────────────────────────────────────
+# [v2.19.9 安全] LLM API Key：**和打码密钥同一套** DPAPI 机制（v2.19.7 的 privacy_store
+#   原语 + 同一套"旧明文读到即迁移"）。这里不新造第二种加密。
+#
+#   为什么该加密（逐条核过，不是"顺手统一"）：
+#     · 它**唯一**的消费者是**进程内**的 `run_crawler._maybe_llm_enhancer`
+#       —— EngineBridge 是在 daemon 线程里进程内调 `crawl()`，**不是子进程**
+#       （`launcher_v8.py` 顶部的 "subprocess + env 传递" 是过期注释）。
+#       于是"在入口 cfg 那一层解出来"就够了，没有任何别的进程要读这份明文。
+#     · 全仓**没有** env / argv / 外部工具 / 导出件需要它：`DEEPSEEK_API_KEY`
+#       只被 `run_crawler` 从注册表搬进 `os.environ`，**从来没有任何代码读它**；
+#       `llm_client.LLMClient` 收的是构造参数里的 `api_key`，不碰配置文件。
+#     · 也没有任何注释说"故意留明文"；相反 `爬虫功能施工方案.md` 的 v2.19.8 附注
+#       写明"若要统一，按 v2.19.7 的 privacy_store 原语改造即可（含旧明文读到即迁移）"。
+#   ⇒ 结论：这是**补完一处已决定却漏掉的不一致**，不是新增风险面。
+#
+#   代价（写清楚，别让下一个人以为是白捡的）：DPAPI 是**当前用户 + 本机**作用域，
+#   密文换机器/换用户就解不开。默认数据根（%LOCALAPPDATA%）无所谓；**便携模式**
+#   （KIANA_PORTABLE=1，数据根 = exe 同级 KianaData/）会让那份目录不再可搬移。
+#   打码密钥 v2.19.7 已经接受了同一代价，且 DPAPI 不可用时**降级为明文并如实告知**
+#   （`launcher_v9._save_llm_settings` 的 warning 分支），这里照同一条纪律办。
+# ─────────────────────────────────────────────────────────────
+_LLM_KEY_SECRET = "llm_key"
+
+
+def load_llm_key(cfg: dict) -> str:
+    """读取 LLM Key：DPAPI 密文（`secrets/llm_key.bin`）优先；若只有旧明文配置则
+    **自动加密迁移**（写密文 + 从配置里抹掉明文键）。任何失败 → 尽力返回可用的字符串。
+
+    **与 `load_captcha_keys` 同构**（同一套 privacy_store 原语、同一套迁移时机），
+    不新造第二种加密。单值在这里包成 `{"key": ...}` 走 `save_secret_json`/
+    `load_secret_json`：那两个函数的契约是"**绝不抛**、DPAPI 不可用时返回 False/None"，
+    正是本处需要的降级语义（字符串原语 `load_protected` 会抛，调用方还得自己兜）。
+
+    注意：迁移只从**内存字典**里抹掉明文，真正落盘要调用方再 `save_config()`
+    —— 这就是 `KianaV9.__init__` 那个启动钩子存在的理由（与打码密钥一致）。
+    """
+    enc = None
+    try:
+        from kiana_vnext_plus.privacy_store import load_secret_json
+        blob = load_secret_json(_LLM_KEY_SECRET)
+        if isinstance(blob, dict):
+            enc = str(blob.get("key") or "")
+    except Exception:
+        enc = None
+    if enc:
+        return enc
+    legacy = str((cfg or {}).get("llm_key") or "")
+    if legacy.strip():
+        if save_llm_key(legacy):            # 迁移成功 → 抹掉明文副本
+            try:
+                cfg.pop("llm_key", None)
+            except Exception:
+                pass
+        return legacy
+    return ""
+
+
+def save_llm_key(key: str) -> bool:
+    """LLM Key DPAPI 加密落盘。空值 → 删除密文文件。返回是否已加密保存
+    （False = DPAPI 不可用，调用方必须诚实告知用户，不得谎称加密）"""
+    try:
+        from kiana_vnext_plus import privacy_store as _ps
+        val = str(key or "").strip()
+        if not val:
+            _ps.delete_secret(_LLM_KEY_SECRET)
+            return True
+        return bool(_ps.save_secret_json(_LLM_KEY_SECRET, {"key": val}))
+    except Exception as e:
+        logger.warning(f"LLM Key 加密保存失败: {e}")
+        return False
+
+
 # ══════════════════════════════════════════════════════════════
 # 一、设计令牌系统（Design Tokens）—— 所有组件只引用令牌
 # ══════════════════════════════════════════════════════════════
@@ -326,7 +399,12 @@ class EngineBridge(QObject):
             "info": bool(cfg.get("info", True)),
             # [v2.16.1] LLM 开关透传（默认关——关闭时引擎不构建客户端）；[v2.17 2.8] 预算
             "llm_enabled": bool(cfg.get("llm_enabled", False)),
-            "llm_key": str(cfg.get("llm_key", "")),
+            # [v2.19.9 安全] 原为 `str(cfg.get("llm_key", ""))` —— 那要求明文键**就在**
+            # 这个 cfg 字典里。改成经 DPAPI 密文读取（与打码密钥同一套原语与迁移时机）：
+            # 默认路径下 cfg 里已经没有明文键了，值只能从 `secrets/llm_key.bin` 解出来。
+            # 传的是**解出来的明文**：引擎是**进程内**跑的（本文件顶部的 "subprocess"
+            # 是过期注释），不需要落盘、不需要 env、也不需要子进程能解 DPAPI。
+            "llm_key": load_llm_key(cfg),
             "llm_api_base": str(cfg.get("llm_api_base", "")),
             "llm_model": str(cfg.get("llm_model", "")),
             "llm_budget_month": int(cfg.get("llm_budget_month", 500)),
@@ -337,6 +415,27 @@ class EngineBridge(QObject):
             # 引擎侧 crawler 读到的恒是默认空 dict → SolverEngine 的 2captcha/capsolver/
             # anticaptcha 分支永远无密钥（UI 死链）。这里经 DPAPI 密文读取并透传。
             "captcha_api_keys": load_captcha_keys(cfg),
+            # [v6 M1-f] 第④跳：接管已登录浏览器（首页开关 → 引擎）。
+            # 此前这个键**不在翻译表**里，于是引擎侧永远读到默认 False：
+            # cdp_attach 在 config.DEFAULT_GLOBAL 里躺着、solver 的接管分支也写好了，
+            # 但用户永远开不了 —— 与 v2.17 身份捆绑丢键是同一类"能填不生效"。
+            "cdp_attach": bool(cfg.get("cdp_attach", False)),
+            "cdp_port": int(cfg.get("cdp_port", 9222)),
+            # [v6 P1] 第④跳：按站身份池（首页开关 → 引擎）。
+            # `cookie_armory_enabled` 这个键**第 36 轮就吃过亏**：当时它缺的正是
+            # **这一跳**（gcfg 翻译表没有它），于是整个身份池功能
+            # **从没被任何 GUI 路径启用过**——引擎侧代码全在，用户就是开不了。
+            # 这次连同第③跳（首页开关）一起补齐，六跳齐。
+            "cookie_armory_enabled": bool(cfg.get("cookie_armory_enabled", False)),
+            # ── [v6 P2] 第④跳：5 个缺口键（原先连翻译表都没有 → 引擎恒读默认值）──
+            # 与第⑤跳（`run_crawler` 的 gcfg 键表）成对：**缺任何一跳都等于没接**。
+            # `headless` 在界面上反向表达为「显示浏览器窗口」，反转发生在上游 `_start()`，
+            # 这里拿到的已经是最终布尔值，不再翻。
+            "headless": bool(cfg.get("headless", True)),
+            "proxy_fetcher_enabled": bool(cfg.get("proxy_fetcher_enabled", False)),
+            "proxy_source": str(cfg.get("proxy_source", "") or ""),
+            "export_markdown": bool(cfg.get("export_markdown", True)),
+            "fingerprint_update_enabled": bool(cfg.get("fingerprint_update_enabled", False)),
         }
         # [v2.19.8 修复] 单页看门狗：GUI 的「高级键」page_timeout（手写在 launcher_config.json）
         # 此前同样**到不了引擎**（翻译表缺键 + crawl() 的 gcfg 键表也缺）→ 恒用默认 300s。
@@ -674,7 +773,7 @@ class KianaV8(QMainWindow):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(20)
         # [FIXED & MODIFIED] v2.10.4 隐身状态卡：引擎已移除代理自动探测（端口 7897 误报坏代理）
-        # → 一律直连模式；作者要隐身自行开全局代理（TUN），引擎无需感知
+        # → 一律直连模式；机主要隐身自行开全局代理（TUN），引擎无需感知
         stealth_card, sl = make_card("隐身状态", "引擎直连模式（隐身请自行开启全局代理）")
         lay.addWidget(stealth_card)
         srow = QHBoxLayout()
@@ -726,7 +825,7 @@ class KianaV8(QMainWindow):
         browse.clicked.connect(self._browse)
         row.addWidget(browse)
         cl.addLayout(row)
-        # [FIXED & MODIFIED] v2.5.1 B站会员 Cookie 文件——首页直接可设置（原仅抽屉内，作者反馈找不到）
+        # [FIXED & MODIFIED] v2.5.1 B站会员 Cookie 文件——首页直接可设置（原仅抽屉内，机主反馈找不到）
         crow = QHBoxLayout()
         crow.setSpacing(16)
         crow.addWidget(QLabel("B站会员Cookie"))
@@ -757,7 +856,7 @@ class KianaV8(QMainWindow):
         self.chk_image = QCheckBox("下载图片")
         self.chk_audio = QCheckBox("下载音频")
         self.chk_sanitize = QCheckBox("内容脱敏")
-        # [FIXED & MODIFIED] 视频/图片默认勾选（作者期望给链接就下载；原默认 False 导致"只有标题"）
+        # [FIXED & MODIFIED] 视频/图片默认勾选（机主期望给链接就下载；原默认 False 导致"只有标题"）
         self.chk_video.setChecked(bool(self.config.get("dl_video", True)))
         self.chk_image.setChecked(bool(self.config.get("dl_image", True)))
         self.chk_audio.setChecked(bool(self.config.get("dl_audio", False)))
@@ -892,7 +991,7 @@ class KianaV8(QMainWindow):
         self.accent_combo.setCurrentText(self.accent_name)
         self.accent_combo.currentTextChanged.connect(self._set_accent)
         lay.addWidget(self.accent_combo)
-        # [FIXED & MODIFIED] v2.5.3 B站会员 Cookie（设置抽屉 + 首页双入口，作者明确要求设置内可配）
+        # [FIXED & MODIFIED] v2.5.3 B站会员 Cookie（设置抽屉 + 首页双入口，机主明确要求设置内可配）
         sec = QLabel("B站会员")
         sec.setObjectName("SectionTitle")
         lay.addWidget(sec)
@@ -1084,7 +1183,7 @@ class KianaV8(QMainWindow):
     def _start(self):
         # [FIXED & MODIFIED] v2.10.5c cookies 登录态自检（爬取开始前提示密钥是否有效）
         self._check_cookies()
-        # [FIXED & MODIFIED] v2.6.0 URL 清洗：作者常从微信/文档复制分享文本整段粘贴
+        # [FIXED & MODIFIED] v2.6.0 URL 清洗：机主常从微信/文档复制分享文本整段粘贴
         # （"【标题】https://xxx?tk=..." 混合行）——正则提取每行的 http(s) URL，剥掉中文/标点尾巴
         import re as _re
         urls = []
@@ -1204,7 +1303,7 @@ class KianaV8(QMainWindow):
             self._toast("引擎加载失败 (exit=3)——请重装或检查安装包", self.T["danger"])
         else:
             self._toast("爬取完成", self.T["success"])
-        # [FIXED & MODIFIED] v2.5.9 完成后自动打开产物目录——作者反馈"空文件夹"根因：
+        # [FIXED & MODIFIED] v2.5.9 完成后自动打开产物目录——机主反馈"空文件夹"根因：
         # 产物按域名分类在 export/域名/ 子目录，顶层无文件被误判为爬取失败。
         # [FIXED & MODIFIED] v2.5.9 延迟 8s 打开：视频 worker 异步收尾，立即打开 videos 可能还空
         if rc == 0:

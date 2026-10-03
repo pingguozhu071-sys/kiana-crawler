@@ -3,7 +3,7 @@
 Windows 桌面数据采集引擎：**单进程 asyncio 协程爬虫**（20-50 路并发）+ PySide6/qfluentwidgets GUI。
 Python ≥3.11（本机 3.14）；依赖全 `==` 钉死（`kiana_vnext_plus/requirements.txt`）；构建/发版统一走 `一键构建.bat`。
 
-**对外表述基线（不可美化）**：本工程自 **v2.10.3.0 基线接手**并大幅推进，不是"从零构建"；内部安全审计是自查性质，**不构成"通过安全认证"**。
+**对外表述基线（不可美化）**：本工程自 **v2.10.3.0 基线接手**并大幅推进，不是"从零构建"；内部安全审计是自查性质，**不构成"通过安全认证"**（`docs/优化计划_v219.md` 第五节）。
 
 > 深入内容在 `docs/`：`DEVLOG.md`（每次改动"为什么"）、`ARCHITECTURE.md`（四层结构）、`BUILD.md`（打包发版）、`GUI施工手册.md`（改 GUI 必读）。本文件只放"一眼要看到 + 违反即事故"的东西。
 > 本机专有路径与环境事实在 `.claude.local.md`（不进 git）。
@@ -13,11 +13,79 @@ Python ≥3.11（本机 3.14）；依赖全 `==` 钉死（`kiana_vnext_plus/requ
 ## 一、六条红线（违反即事故）
 
 1. **cookies 与密钥绝不入包 / 入库 / 入日志**。`cookies.txt` 是本机密钥，只经环境变量 `KIANA_COOKIE_FILES` 交付；`.gitignore` 必须覆盖 `*cookies*.txt` / `master.key*` / `KianaData/`（门禁第 7 项会查）。
-2. **`assets/icon.ico` 用作者原图**：只读打包，禁止裁剪 / 重画 / 重编码。
-3. **绝不静默安装交付**：脚本支持 `/S` 只是 NSIS 标准能力，默认必须是完整向导；发版由作者决策后再发。**不要用正式安装的 `Uninstall.exe` 去卸测试副本**——曾因此删掉正式安装的快捷方式与注册表登记（`docs/BUILD.md` 第五节）。
+2. **`assets/icon.ico` 用机主原图**：只读打包，禁止裁剪 / 重画 / 重编码。
+3. **绝不静默安装交付**：脚本支持 `/S` 只是 NSIS 标准能力，默认必须是完整向导；发版由机主决策后再发。**不要用正式安装的 `Uninstall.exe` 去卸测试副本**——曾因此删掉正式安装的快捷方式与注册表登记（`docs/BUILD.md` 第五节）。
 4. **所有动态 URL 请求必须过闸**：走 `url_utils.safe_get` / `safe_urlopen`（协议 + 私网 + 白名单 + `allow_redirects=False` **手动逐跳**复检）。裸 `session.get` 会被重定向绕过——v2.19.7 已用本机双服务 PoC 复现"内网正文以 .jpg 落盘"。
 5. **脱敏的边界要分清**：日志 Filter 必须挂 **handler 上**（挂 root logger 无效——Python 只调用祖先的 handler，不调用祖先 logger 的 filter）；新建 handler 会自动获得脱敏（`config.py` 包装了 `logging.Handler.__init__`）。落盘/导出的**副本**统一过 `sanitizer.sanitize_record`。
-6. **第三方代码先查许可**：copyleft 类（GPL/AGPL/LGPL）**不作为新依赖引入**；本工程既有的 GPLv3 组件（qfluentwidgets、bgutil POT server）已登记在案，工程整体按 **GPL-3.0** 授权以保持一致。借鉴思路（而非代码）时，注释只写"设计目标/通用做法"，**不点名上游、不复制表达**（`docs/来源与合规声明.md`）。
+6. **第三方代码先查许可**：GPL/AGPL/LGPL 类一律不引入；借鉴必须在注释写明"参考 XX 的算法/模式，实现为本工程重写"（`docs/来源与合规声明.md`）。
+
+## 一·前0、**改完就只跑"那一个"测试，别等全量**（机主 2026-10-02 点名）
+
+机主原话（大意）：**"你光跑一次全量……你自己弄出来的错误你又不去查……
+及时掐断来重跑，纯浪费时间。"**
+
+**我犯的实例**：改 `tools/stealth_bench.py` 加 `--kernel` 时，
+把 `run_bench(probe)` 的**调用契约**从 `probe(url)` 悄悄改成了 `probe(url, kernel)`
+—— 既有的两个测试传进来的探针只接 `url`，于是 `TypeError` 被
+`except: unknown` 吞掉，表现成"全部站点取不到判据"。
+**这个错误本该在改完的下一秒就被发现**（跑 `pytest tests/test_m3_stealth_bench.py`
+只要 **0.1 秒**），结果我拖到 3 分钟的全量里才撞见，白等一轮。
+
+### 规矩
+
+| 改了什么 | 立刻跑什么（都是秒级） |
+|---|---|
+| `tools/stealth_bench.py` | `pytest tests/test_m3_stealth_bench.py` |
+| `tools/sync_doc_counts.py` / 文档数字 | `pytest tests/test_doc_claims.py` |
+| `kiana_vnext_plus/url_utils.py` | `pytest tests -k shortlink` |
+| `kiana_vnext_plus/cookie_armory.py` | `pytest tests -k identity_pool` |
+| `kiana_vnext_plus/universal_downloader.py` | `pytest tests -k "cookie or fake_success"` |
+| 改了**函数签名**（尤其参数个数） | **先搜它的所有调用方**，别假设"只有我这一处" |
+
+**全量测试只在"一轮工作收尾、准备提交"时跑一次**，不是每改一个文件就跑。
+
+### 更根本的一条
+
+**改签名 = 改契约。** 改之前先 `grep` 所有调用点；
+能被"几秒的定向测试"抓住的错，**绝不留到全量**。
+
+## 一·前、改完引擎代码的**固定动作**（省一次全量测试）
+
+`tests/test_doc_claims.py` 强制文档里的「引擎 XX 行」**精确等于实测**。
+而**每改一次引擎代码这个数就变** → 那条测试必红。
+
+**原来的浪费**（机主点名过）：
+```
+改代码 → 跑全量（3 分钟）→ 文档守卫红 → 手改数字 → 再跑一遍全量（3 分钟）→ 提交
+```
+每轮白烧一次全量。
+
+**现在固定成**：
+```powershell
+python tools/sync_doc_counts.py      # 改完引擎代码、跑测试**之前**先同步
+python -m pytest tests -q            # 然后全量只需跑一次
+```
+`--check` 只检查不同步（不一致退出码 1）。
+它**只改「引擎 XX 行」**，绝不碰启动器的 `1,717` / `1,348`。
+
+## 一·补、工作方式（机主 2026-10-01 明确指示）
+
+**能自己跑的就自己跑，不要找机主要日志。** 原话：
+
+> 「你要说什么日志啥的你跑测试你直接自己去看日志不就行吗，你直接全自动托管不就行吗」
+
+| 事情 | 谁做 |
+|---|---|
+| 无界面（headless）爬取、命令行跑引擎 | **Agent 自己跑**，日志自己读 |
+| 门禁 / 全量测试 / 各类自检工具 | **Agent 自己跑** |
+| 起浏览器但不弹窗的（如靶场探针） | **Agent 自己跑**（避开机主打游戏时段） |
+| **会弹 GUI 窗口的**（`tools/v9_smoke.py`、`tools/gui_perf_probe.py`） | **需要机主**（避开打游戏时段）——机主明确要求"不要在前台冒弹窗" |
+
+**凡"我能自己执行的"，一律不列进"需要机主"清单。** 只列真的做不到的：
+需要机主本人的账号、需要机主决定、或会弹窗打扰机主的。
+
+> **为什么写进红线区**：此前多轮把"跑一次真爬取并读日志"当成需要机主的任务，
+> 实际完全可以自理。这种**过度索求**会让机主以为工程卡住了，是真实的沟通成本。
 
 ---
 
@@ -37,7 +105,7 @@ python -m kiana_vnext_plus.cli status --project <pid>             # 任务管理
 # 测试与门禁（全部离线，约 2 分钟）
 python -m pytest tests -q                           # 全量（门禁要求 ≥400 passed 且 0 failed）
 python -m pytest tests -q -p no:warnings            # CI 同款
-python tools/release_check.py                       # 10 项发版门禁，任一项 FAIL → exit 1
+python tools/release_check.py                       # 14 项发版门禁，任一项 FAIL → exit 1
 python tools/verify_all.py [--skip-*]               # 多线回归：1 条离线规则线 + 7 条在线线（需公网与 cookies）
 
 # GUI 验证（不弹窗 / 不遮挡桌面）
@@ -84,10 +152,10 @@ run_crawler.py        CLI 真入口 + GUI 的进程内引擎（crawl()，也是"
 ## 四、不碰清单（改前先读这条为什么）
 
 1. `launcher_v8.py` **不许删**（见上）；`installer/lang_strings.nsi` 与 `installer/langs/*` 是**生成物**（改文案要跑 `tools/gen_nsis_langs.py`）。
-2. **不改并发模型**：asyncio 协程选型；不引多进程，也不引入重型爬虫/任务框架（`multiprocessing` 还被两个 spec 排除）。
+2. **不改并发模型**：asyncio 协程选型；不引多进程 / Celery / Scrapy（`multiprocessing` 还被两个 spec 排除）。
 3. **不引 aiohttp**：本机 aiohttp 外网全超时，全仓已换 `curl_cffi`（`README.md`）。
 4. **不给运行态 URL 脱敏**：`frontier.normalized_url`、`video_downloads.video_url` 是"稍后还要再请求一次"的钥匙，抹掉 `?token=`/签名参数会让续爬/续下 403、状态更新匹配不到行。敏感 URL 的收口在**导出侧**（`sanitize_record`），这两张表也不参与任何导出。**别"顺手补闸"。**
-5. **不给 `llm_client` 加 SSRF 闸**：那里是作者自填端点，套闸会把 `http://localhost:11434`（Ollama）/ LM Studio 这类本地推理服务拦死——是明确支持的用法。
+5. **不给 `llm_client` 加 SSRF 闸**：那里是机主自填端点，套闸会把 `http://localhost:11434`（Ollama）/ LM Studio 这类本地推理服务拦死——是明确支持的用法。
 6. 不装系统级工具（node/deno/ffmpeg 只认随包或 PATH 已有）；新增运行期依赖先审批。
 7. 不改 GUI 视觉/交互除非任务明确点名；纯 GUI 任务里 `kiana_vnext_plus/` 一行都不许动（唯一例外是 `__init__.py` 版本号）。
 8. 不用 `git filter-repo`/BFG 重写历史；验证产物（`.tmp_*`）不入库。
@@ -150,7 +218,7 @@ run_crawler.py        CLI 真入口 + GUI 的进程内引擎（crawl()，也是"
 
 ---
 
-## 九、工作纪律（作者明确要求，长期有效）
+## 九、工作纪律（机主明确要求，长期有效）
 
 - 汇报用 **commit / 里程碑**，**不用"X 天"计工作量**；中文、先给结论再给细节。
 - 改源码用 Edit/Write 或 python 脚本；**不要用 git bash 的 `sed`/`echo` 直接改源码**。
@@ -164,8 +232,9 @@ run_crawler.py        CLI 真入口 + GUI 的进程内引擎（crawl()，也是"
 
 ## 十、已知文档滞后（引用前先核对）
 
+- **`docs/残余风险登记表.md` 是残余风险的唯一入口**：所有"已评估、决定不改"与"需机主在场才能推进"的项都在那里，逐条带理由。**新增残余风险先登记进那张表，再考虑加守卫**；本表不接受空白格（没结论就写"未评估"）。
 - `docs/ARCHITECTURE.md` 头部版本号**仍停在 v2.18.2**（`docs/BUILD.md` 与 `CHANGELOG.md` 已同步到 v2.19.8）→ 版本只信 `VERSION.json`。
-- CI 步骤名写"基线锁死 ruff≤84 / mypy≤104"，**实际语义是"有任意告警即红"**（比本地门禁严格）。
+- CI 步骤名写"基线锁死 ruff≤84 / mypy≤104"，**实际语义是"有任意告警即红"**（比本地门禁严格）。本地门禁的锁死值已按实测收紧到 **80/103**。
 - `tools/gui_smoke_shot.py` 与根目录 `_syntax_check.py` / `全方位检查.py` / `启动爬虫.bat` 是**遗留脚本**（分别指向 v8 旧壳、被内联取代、无调用点、硬编码本机 Python 路径）——别以它们为准。
 
 **[v2.19.8 已修，保留记录以免照旧说法重复排查]**

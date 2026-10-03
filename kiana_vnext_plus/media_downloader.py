@@ -8,21 +8,11 @@ logger = logging.getLogger(__name__)
 
 # [FIXED & MODIFIED] F2：防盗链 Referer 推导（B站图片 i0.hdslb.com 等 CDN 校验主站 Referer，
 # 微博/公众号图床同理——无 Referer 直接 403/空响应）
+# [v6] 实现已上移到 `url_utils.referer_for`（唯一实现）——本函数保留为别名，
+# 避免既有调用点/测试失效；**新代码请直接用 `url_utils.referer_for`**。
 def _referer_for(url: str) -> str:
-    try:
-        from urllib.parse import urlparse as _up
-        host = (_up(url).netloc or "").lower()
-    except Exception:
-        return ""
-    if "hdslb.com" in host:
-        return "https://www.bilibili.com/"
-    if "alicdn.com" in host or "taobao.com" in host:
-        return "https://www.taobao.com/"
-    if "sinaimg" in host:
-        return "https://weibo.com/"
-    if "douyinvod.com" in host or "bytecdn.cn" in host or "douyin" in host:
-        return "https://www.douyin.com/"
-    return f"https://{host}/" if host else ""
+    from .url_utils import referer_for
+    return referer_for(url)
 
 
 class MediaDownloader:
@@ -47,9 +37,15 @@ class MediaDownloader:
         self._worker_task = asyncio.create_task(self.worker())
 
     def _dl_headers(self, url: str) -> dict:
-        """[FIXED & MODIFIED] F2：构造防盗链请求头（UA + 主站 Referer）"""
+        """[FIXED & MODIFIED] F2：构造防盗链请求头（UA + 主站 Referer）
+
+        [v6 修复] UA 改为**由 TLS 伪装版本推导**。原来硬编码 `Chrome/120.0`，
+        而本会话的 impersonate 是 `chrome136` —— UA 说 120、JA3/JA4 说 136，
+        正是工程自己认定的"反爬第一自杀行为"，且恰好在防盗链最紧的下载链上。
+        """
+        from .fingerprint_consistency import TLS_IMPERSONATE_POOL, user_agent_for
         return {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+            "User-Agent": user_agent_for(TLS_IMPERSONATE_POOL[0]),
             "Referer": _referer_for(url),
         }
 

@@ -3,6 +3,7 @@ Usage: python run_crawler.py <URL> [-d depth] [-m max_pages] [-o output]
 """
 import sys
 import os
+import re
 import asyncio
 import time
 import argparse
@@ -13,11 +14,20 @@ ENGINE = Path(__file__).parent.resolve()
 if ENGINE.exists():
     sys.path.insert(0, str(ENGINE))
 
+# [v6] 内置第三方部件（`vendor/`）—— **插在最前面**，让 `import camoufox` / `import ddddocr`
+# 优先取**随工程打包的副本**，而不是 site-packages 里那份。
+# 为什么放进工程：机主要求"打包也打进去"，换机器/装完即用，不依赖用户自己 pip。
+# 为什么源码不入 git：见 `vendor/README.md`（它们是上游项目，混进仓库既踩许可边界，
+# 也让"这仓库到底是谁的代码"说不清）。**依赖用、源码不推。**
+_VENDOR = ENGINE / "vendor"
+if _VENDOR.is_dir():
+    sys.path.insert(0, str(_VENDOR))
+
 # [FIXED & MODIFIED] v2.11 KIANA_CRYPTO_KEY 机制整体删除（identity.py Fernet 链零消费者）。
 
 # [FIXED & MODIFIED] v2.6.8 强制 UTF-8 locale（安装版独立进程默认 gbk → yt-dlp 调 ffmpeg 合并时
 # subprocess 读 ffmpeg 输出（B站 dash 流 metadata 含 UTF-8 中文）→ gbk 解码崩溃 → 合并失败 →
-# 分离流被清理 → 作者"空文件夹"根因。Windows 不支持 C.UTF-8，用 en_US.UTF-8（已验证 setlocale 成功）。
+# 分离流被清理 → 机主"空文件夹"根因。Windows 不支持 C.UTF-8，用 en_US.UTF-8（已验证 setlocale 成功）。
 import locale as _locale
 try:
     _locale.setlocale(_locale.LC_CTYPE, 'en_US.UTF-8')
@@ -67,7 +77,7 @@ def _detect_browser_path() -> str:
         os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
         os.environ.get("PATCHRIGHT_BROWSERS_PATH", ""),
         str(_P(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"),
-        # [FIXED & MODIFIED] F5：硬编码本机绝对路径改为动态拼 LOCALAPPDATA（用户名变化后仍可用）
+        # [FIXED & MODIFIED] F5：硬编码 C:\Users\miku0\... 改为动态拼 LOCALAPPDATA（用户名变化/Hermes 迁移后仍可用）
         str(_P(os.environ.get("LOCALAPPDATA", "")) / "Hermes Agent CN Desktop" / "data" / "hermes-home" / "cache" / "ms-playwright"),
     ]
     for p in candidates:
@@ -171,6 +181,30 @@ async def crawl(urls, cfg, on_engine=None):
         # DEFAULT_GLOBAL 的 300s（"关不掉看门狗"）。
         # 不写死默认值是为了保留 config.DEFAULT_GLOBAL 作为唯一默认源。
         **page_timeout_override(cfg),
+        # [v6 M1-f] 第⑤跳：接管已登录浏览器（首页开关 → 引擎）。
+        # 与第④跳同理：此前 gcfg 键表里没有这两个键，值到不了 GlobalConfig，
+        # 引擎恒用 DEFAULT_GLOBAL 的 False → 功能等于不存在。
+        "cdp_attach": bool(cfg.get("cdp_attach", False)),
+        # [v6 修复·接线缺口] `cookie_armory_enabled` 此前**没有这一跳**：
+        # DEFAULT_GLOBAL 有、crawler 也读，但 gcfg 从不传导 → 引擎永远读到 False，
+        # 于是 CookieArmory（按站身份池：健康分/额度/冷却/复活）**从未被任何路径启用过**
+        # （GUI 无开关、CLI 无参数）。与上一条注释点名的"原 config 死键，GUI 一直无入口"
+        # 是同一类。这里补上管道；**默认仍是 False**（风险敏感特性，开启需显式动作）。
+        "cookie_armory_enabled": bool(cfg.get("cookie_armory_enabled", False)),
+        "cdp_port": int(cfg.get("cdp_port", 9222)),
+        # ── [v6 P2] 5 个"有默认值、但从来没人能改"的键，补上第⑤跳 ──────────────
+        # 它们的共同病史：`DEFAULT_GLOBAL` 里有、引擎也读，**但 gcfg 键表里没有**，
+        # 于是用户在界面上无论怎么设，引擎永远读到默认值。
+        # 审计测试 `tests/test_config_wiring_audit.py` 曾把它们标成 `GAP`
+        # （"看起来是用户会想控的功能，但当前无入口"）——本轮把入口补上。
+        #
+        # `headless`：界面上是**反向**表达的「显示浏览器窗口」，
+        #   `headless = not 显示窗口`。语义反转点只有这一处，别在别处再翻一次。
+        "headless": bool(cfg.get("headless", True)),
+        "proxy_fetcher_enabled": bool(cfg.get("proxy_fetcher_enabled", False)),
+        "proxy_source": str(cfg.get("proxy_source", "") or ""),
+        "export_markdown": bool(cfg.get("export_markdown", True)),
+        "fingerprint_update_enabled": bool(cfg.get("fingerprint_update_enabled", False)),
     }))
 
     # [FIXED & MODIFIED] v2.11 产物保鲜：历史任务目录自动清理（默认 7 天/50GB，config 可调；
@@ -291,10 +325,14 @@ async def crawl(urls, cfg, on_engine=None):
             p = getattr(c, "_progress", {})
             elapsed = time.monotonic() - t0
             d, f2, pn = p.get("done", 0), p.get("failed", 0), p.get("pending", 0)
+            # [v6 修复·真机实测发现] `skipped` 原被并进 `fail` —— 达到页数上限跳过的任务
+            # 不是失败，却让进度条显示 "fail=19"（日志里一条错误都没有）。分开显示。
+            sk = p.get("skipped", 0)
             tot = p.get("total", 0)
             pct = d / tot * 100 if tot else 0
             speed = d / elapsed if elapsed > 0 else 0
-            print(f"  [{elapsed:5.0f}s] {bar(pct)} {pct:5.1f}%  done={d} fail={f2} pend={pn}  {speed:.1f}p/s")
+            print(f"  [{elapsed:5.0f}s] {bar(pct)} {pct:5.1f}%  done={d} fail={f2} "
+                  f"skip={sk} pend={pn}  {speed:.1f}p/s")
             # [FIXED & MODIFIED] v2.14 心跳降本：原 dl.rglob("*.json") 全产物树递归（含视频/图片
             # 目录，文件多时数百 ms 且阻塞 loop）→ 限定 data 子目录 + 挪线程池
             try:
@@ -339,6 +377,98 @@ async def crawl(urls, cfg, on_engine=None):
     print(f"{'='*60}\n")
     return c  # 供 GUI 进程内引擎软停止（c._should_stop）
 
+def _armory_cli(args) -> int:
+    """身份池的「存 / 查 / 删」—— 与 GUI 的「导入身份…」「查看身份」是**同一份实现**
+    （都走 `CookieArmory` + `armory_db_path()` 唯一路径）。
+
+    [v6 修复·机主实测发现] 加这个是因为：功能建好了、开关也有了，
+    但**使用者没有任何地方能往里存东西** —— 比静默失效更糟，
+    因为它明说了"库里没有身份"却不给补的办法。
+
+    **cookie 明文绝不打印**：只经 `parse_cookie_file` 解析后交给 `CookieArmory`
+    加密入库（Fernet）。列表只出站点/名字/健康分/冷却。
+    """
+    from kiana_vnext_plus.cookie_armory import CookieArmory, armory_db_path, parse_cookie_file
+    from kiana_vnext_plus.cli import _read_master_password
+    try:
+        arm = CookieArmory(armory_db_path(), _read_master_password())
+    except Exception as e:
+        print(f"❌ 打不开身份库（{armory_db_path()}）: {type(e).__name__}: {e}")
+        return 1
+
+    if args.cookie_list:
+        rows = arm.list_accounts()
+        if not rows:
+            print("（身份池为空 —— 用 `--cookie-add <cookies.txt> --site <站点> --name <身份名>` 入库）")
+            return 0
+        print(f"{'站点':<24}{'身份':<22}{'健康分':<9}冷却")
+        print("-" * 66)
+        for r in rows:
+            cd = f"{r['cooldown_left']}s" if r.get("cooldown_left", 0) > 0 else "—"
+            print(f"{str(r.get('site'))[:22]:<24}{str(r.get('name'))[:20]:<22}"
+                  f"{str(r.get('health')):<9}{cd}")
+        print(f"\n共 {len(rows)} 个身份（cookie 明文已加密，此处不显示）")
+        return 0
+
+    if args.cookie_del:
+        site = args.cookie_del.strip().lower()
+        rows = [r for r in arm.list_accounts() if str(r.get("site")) == site]
+        if not rows:
+            print(f"（站点 {site} 下没有身份，无需删除）")
+            return 0
+        # 删除不可撤销 → 明确报数，别静默删
+        try:
+            import sqlite3
+            with sqlite3.connect(armory_db_path()) as conn:
+                n = conn.execute("DELETE FROM accounts WHERE site=?", (site,)).rowcount
+            print(f"🗑️ 已删除 {site} 下的 {n} 个身份（不可撤销）")
+        except Exception as e:
+            print(f"❌ 删除失败: {type(e).__name__}: {e}")
+            return 1
+        return 0
+
+    # --cookie-add
+    path = args.cookie_add
+    if not os.path.exists(path):
+        print(f"❌ cookies 文件不存在: {path}")
+        return 1
+    site = (args.site or "").strip().lower()
+    if not site:
+        # 从文件名猜（与 GUI 同款逻辑）——猜不出就必须让用户显式给，不许瞎猜站点
+        base = os.path.basename(path)
+        base = re.sub(r"\.(txt|json)$", "", base, flags=re.I)
+        base = re.sub(r"_?cookies?\s*\(\d+\)\s*$", "", base, flags=re.I)
+        base = re.sub(r"_?cookies?$", "", base, flags=re.I).strip(" _-")
+        m = re.search(r"([a-z0-9-]+(?:\.[a-z0-9-]+)+)", base, re.I)
+        site = m.group(1).lower() if m else ""
+    # [v6] 归一化走**唯一实现**（`normalize_site`）——不许在这里自己剥 `www.`：
+    # 剥法一旦与 `acquire_identity` 那边不一致，就又回到"存了查不到"。
+    from kiana_vnext_plus.cookie_armory import normalize_site
+    site = normalize_site(site)
+    if not site or "." not in site:
+        print("❌ 需要 `--site <站点>`（如 bilibili.com）——文件名里猜不出。")
+        print("   站点必须准：同一站点的多个身份才会互相轮换，写错等于各存各的。")
+        return 1
+    name = (args.name or "").strip() or os.path.splitext(os.path.basename(path))[0][:24]
+    cookie_str = parse_cookie_file(path)
+    if not cookie_str:
+        print("❌ 这个文件里没解析出任何 cookie（需要 Netscape 格式的 cookies.txt）")
+        return 1
+    try:
+        ok = arm.add_account(site, name, cookie_str)
+    except Exception as e:
+        print(f"❌ 入库失败: {type(e).__name__}: {e}")
+        return 1
+    # **不回显 cookie 内容**，只报身份标识
+    print(f"{'✅' if ok else '❌'} {name} @ {site} "
+          f"{'已加密入库' if ok else '入库失败（同名身份可能已存在）'}")
+    if ok:
+        print(f"   库位置: {armory_db_path()}")
+        print(f"   共 {len(arm.list_accounts(site))} 个 {site} 身份"
+              f"（同站多个身份才会互相轮换）")
+    return 0 if ok else 1
+
+
 def main():
     # Windows: Proactor 事件循环比默认 Selector 性能高 20-30%（大量 socket 并发时）
     # [FIXED & MODIFIED] v2.9.0 Python 3.14+ 默认即 Proactor——显式设置触发
@@ -357,6 +487,28 @@ def main():
     ap.add_argument("-o", "--output", help="Output directory")
     ap.add_argument("--no-sanitize", action="store_true",
                     help="关闭内容脱敏（保留手机号/邮箱/IP 原始数据）")
+    # [v6 接线缺口] 给 CookieArmory 一个**可达入口**。
+    # 此前它既无 GUI 开关也无 CLI 参数，引擎侧的键永远是默认 False —— 等于死代码。
+    # 这里只加"命令行可达"（不加 GUI 一键开关：这是风险敏感特性，
+    # 是否上首页开关由机主决定，见 docs/后续待开功能.md）。
+    ap.add_argument("--cookie-armory", action="store_true",
+                    help="启用按站身份弹药库（需已配置 cookies；默认关，风险自负）")
+    # [v6 修复·机主实测发现] **身份池没有可达的导入入口**。
+    # `kiana_vnext_plus.cli cookie-add` 那套逻辑一直存在，但机主用的入口是
+    # `run_crawler.py` 与 GUI —— 两边都**没有导入**：
+    #   · GUI：我加了开关与状态行，却漏了导入（状态行会说"库里没有身份"，
+    #          但界面里没有任何地方能加）；
+    #   · 本 CLI：只有 `--cookie-armory`（**用**），没有 `--cookie-add`（**存**）。
+    # 于是"按站身份池"对使用者等于不存在。这里把"存"的一侧补进主入口。
+    ap.add_argument("--cookie-add", default="", action="store", metavar="cookies.txt",
+                    help="把一份 cookies.txt 加密存入按站身份池后退出"
+                         "（配 --site / --name 指定站点与身份名）")
+    ap.add_argument("--site", default="", help="配合 --cookie-add：站点（如 bilibili.com）")
+    ap.add_argument("--name", default="", help="配合 --cookie-add：身份备注名（区分多账号）")
+    ap.add_argument("--cookie-list", action="store_true",
+                    help="列出按站身份池里的身份（不含 cookie 明文）后退出")
+    ap.add_argument("--cookie-del", default="", action="store", metavar="SITE",
+                    help="删除某站点下的全部身份后退出（谨慎：不可撤销）")
     ap.add_argument("--no-video", action="store_true", help="不下载视频")
     ap.add_argument("--no-image", action="store_true", help="不下载图片")
     ap.add_argument("--dl-audio", action="store_true", help="下载音频")
@@ -377,6 +529,11 @@ def main():
                          "不传则用配置默认 300s）")
     args = ap.parse_args()
 
+    # ── [v6] 身份池的「存 / 查 / 删」三个动作：**就地完成就退出**，不进爬取流程 ──
+    # 放这里（解析完参数、动 cfg 之前）是为了：做完就 return，不浪费一次爬虫初始化。
+    if args.cookie_add or args.cookie_list or args.cookie_del:
+        return _armory_cli(args)
+
     cfg = dict(_defaults)
     # [FIXED & MODIFIED] v2.16 -d 0 语义：原 `if args.depth:` 对 0 为假 → 深度 0（只爬种子）
     # 被静默忽略成默认深度 5（实测 -d 0 跟出 98 个子任务）
@@ -384,6 +541,7 @@ def main():
     if args.max_pages is not None and args.max_pages > 0: cfg["max_pages"] = args.max_pages
     if args.output: cfg["download_path"] = args.output
     if args.no_sanitize: cfg["no_sanitize"] = True
+    if args.cookie_armory: cfg["cookie_armory_enabled"] = True
     if args.no_video: cfg["dl_video"] = False
     if args.no_image: cfg["dl_image"] = False
     if args.dl_audio: cfg["dl_audio"] = True
@@ -399,7 +557,7 @@ def main():
     # [v2.17 B4b] 证据驱动动态优先级（默认关）
     if args.dynamic_priority:
         cfg["dynamic_priority"] = True
-    # [v2.19.8 修复·作者发现的漂移] 原为 `if args.page_timeout > 0`：帮助文本承诺"0=关闭"，
+    # [v2.19.8 修复·机主发现的漂移] 原为 `if args.page_timeout > 0`：帮助文本承诺"0=关闭"，
     # 但显式传 0 时键根本没进 cfg（argparse 默认也是 0，两者不可区分）→ 引擎读到的是
     # DEFAULT_GLOBAL 的 300s，**看门狗关不掉**（声明与行为不符）。
     # 现：argparse 默认改 None（=未指定，沿用配置默认），显式传值（含 0）一律透传。

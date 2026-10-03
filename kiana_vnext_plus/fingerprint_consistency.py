@@ -5,6 +5,7 @@
 """
 import hashlib
 import random
+import re
 
 
 # ── GPU 厂商/渲染器组合（28 组，覆盖 2023-2025 全主流显卡）────────────────
@@ -71,7 +72,7 @@ CHROME_VERSIONS = list(range(120, 139))
 
 
 def clamp_screen_and_window(sw: int, sh: int, win_w=None, win_h=None):
-    """[v2.17 E-P1-6] 屏幕/任务栏/窗口一致性 clamp（纯 Python 实现，
+    """[v2.17 E-P1-6] 屏幕/任务栏/窗口一致性 clamp（参考 Camoufox pythonlib 纯 Python
     逻辑——MIT 部分，适配本工程实现）：可用高度必须小于屏高（任务栏 40-72px），
     窗口尺寸必须 <= 屏幕（防"Windows UA + 任务栏截掉后 avail>screen"式不可能组合）。
     返回 (avail_h, win_w, win_h)。"""
@@ -140,14 +141,70 @@ def _seed_rng(seed_hex: str) -> random.Random:
     return random.Random(seed_int)
 
 
+# ── 本机会话标识与本地地理（[v6 修复] 见 _pick_geo 的说明）─────────────
+LOCAL_SESSION = "default_local_session"
+# 无代理直连时的默认地理。取 CN 是因为本工程的运行环境在中国大陆：
+# **诚实**地报本机地理，比伪装成一个和出口 IP 不符的外国更安全。
+LOCAL_GEO = "CN"
+
+
 def _pick_geo(proxy_url: str) -> str:
-    """从代理 URL 推断地理区域（简单启发式）"""
-    lower = proxy_url.lower()
+    """从代理 URL 推断地理区域。
+
+    [v6 修复·真机实测发现] **原实现用子串匹配**：
+        for code in TIMEZONE_MAP:
+            if code.lower() in proxy_url.lower():   # ← 子串
+                return code
+    后果：本机会话的哨兵串 `"default_local_session"` 里同时含有
+      **`DE`**(**de**fault) / **`AU`**(def**au**lt) / **`CA`**(lo**ca**l)
+    → 循环取第一个 → **恒判为德国（DE）**（注释却写着"默认美国"，与实际不符）。
+
+    于是**每一次不走代理的爬取**都会伪装成：
+      `de-DE` 语言 + `Europe/Berlin` 时区 + 德语 Linux UA ——
+    而真实出口是**中国大陆 IP**。风控只要交叉比对 IP 地理与浏览器语言/时区，
+    **当场识破**（比"不伪装"更糟：真实浏览器不会自相矛盾）。
+    实测证据：`compute_fingerprint_from_ip("default_local_session")`
+      → geo=DE / lang=de-DE / tz=Europe/Berlin / platform=Linux x86_64。
+
+    修法两条：
+      ① **本机会话不再伪装外国** —— 直接返回本机地理（LOCAL_GEO）；
+      ② 代理场景改为 **token 边界匹配**，`"default"` 里的 `de` 不会再被当德国。
+    """
+    lower = (proxy_url or "").strip().lower()
+    # ① 本机会话（无代理直连）：用本机真实地理
+    if not lower or lower == LOCAL_SESSION or "local" in _tokens_of(lower):
+        return LOCAL_GEO
+    # ② 代理：按分隔符切词后**整词**匹配（不再子串匹配）
+    tokens = _tokens_of(lower)
     for code in TIMEZONE_MAP:
-        if code.lower() in lower:
+        if code.lower() in tokens:
             return code
-    # 默认美国
     return "US"
+
+
+def _tokens_of(s: str) -> set:
+    """把 URL/串按非字母数字切开，供**整词**匹配（避免 de 命中 default）"""
+    return {t for t in re.split(r"[^a-z0-9]+", s) if t}
+
+
+def _is_local_session(proxy_url: str) -> bool:
+    """是否"无代理直连本机"会话（哨兵串 / 空 / 含 local 词）"""
+    lower = (proxy_url or "").strip().lower()
+    return (not lower) or lower == LOCAL_SESSION or "local" in _tokens_of(lower)
+
+
+def _local_platform() -> str:
+    """本机真实 `navigator.platform` 对应的取值。
+
+    与 geo 同样的道理：**本机会话不该伪装**。伪装成别的操作系统只会
+    和真实系统特征（字体、时区、系统字体栅格）产生矛盾。
+    """
+    import sys
+    if sys.platform.startswith("win"):
+        return "Win32"
+    if sys.platform == "darwin":
+        return "MacIntel"
+    return "Linux x86_64"
 
 
 def compute_fingerprint_from_ip(proxy_url: str) -> dict:
@@ -210,7 +267,10 @@ def compute_fingerprint_from_ip(proxy_url: str) -> dict:
     pixel_ratio = rng.choice([1, 1, 1, 1.25, 1.5, 2])
 
     # Navigator 属性
-    platform = rng.choice(PLATFORMS)
+    # [v6 修复] 本机会话**平台要跟真实机器一致**：原来无条件 `rng.choice(PLATFORMS)`，
+    # 而 `default_local_session` 这个种子偏偏抽到 `Linux x86_64` —— 于是本机是 Windows、
+    # 浏览器却自称 Linux。与 geo 同一条道理：**本机会话应当诚实，不该伪装**。
+    platform = _local_platform() if _is_local_session(proxy_url) else rng.choice(PLATFORMS)
     hw_conc = rng.choice(HARDWARE_CONCURRENCY)
     dev_mem = rng.choice(DEVICE_MEMORY)
 
@@ -346,3 +406,21 @@ def pick_tls_impersonate(proxy_url: str) -> str:
     seed = hashlib.sha256(proxy_url.encode()).hexdigest()
     idx = int(seed[6:8], 16) % len(TLS_IMPERSONATE_POOL)
     return TLS_IMPERSONATE_POOL[idx]
+
+
+def user_agent_for(impersonate: str) -> str:
+    """按指定的 TLS 伪装版本生成**同源**的桌面 Chrome UA。
+
+    [v6 修复] 下载链此前各自硬编码 UA：`Chrome/120.0`，甚至**漏掉版本号的截断串**
+    （`…AppleWebKit/537.36` 后直接结束）——而它们的会话 impersonate 是 `chrome136`。
+    UA 说 120、JA3/JA4 说 136，正是本文件 195 行那条注释认定的
+    "**反爬第一自杀行为**"；截断串更严重：**没有任何真实浏览器会发那种形态**。
+    主通道早在 v2.10.5 就做了 UA/TLS 同源绑定，下载链这次补上。
+
+    解析不出主版本时回退 136（与 `TLS_IMPERSONATE_POOL[0]` 对齐），
+    绝不生成"无版本号"的 UA。
+    """
+    digits = "".join(ch for ch in str(impersonate or "") if ch.isdigit())
+    major = int(digits) if digits.isdigit() and int(digits) >= 100 else 136
+    return ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36")

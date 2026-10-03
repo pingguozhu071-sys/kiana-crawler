@@ -35,14 +35,21 @@ http_cache/
 # 不忽略会让门禁第 2 项（git status 必须干净，未跟踪文件也算脏）直接 FAIL。
 .claude.local.md
 
-# [v2.19.8 对外发布] 冒烟/截图脚本的产物不入库。此前 gui_shots/ 下的窗口截图
-# 未被忽略，跑一次 v9_smoke.py 就会重新落盘并可能被误提交——截图里会带本机
-# 用户名路径与签名水印，属于"扫描器查不出来"的像素级泄漏，从忽略规则上根治。
-# 注意：只忽略产物，tests/assets 下的真实样本（*.html / 图片 / abogus_vectors.json）不受影响。
-tests/assets/gui_shots/
-tests/assets/v9_smoke_result.txt
-tests/assets/v9_engine_result.txt
-tests/assets/v9mini_trace.txt
-tests/assets/diag.txt
-tools/fluent_smoke.png
-tools/*_smoke.png
+# ── 外部部件源码：**绝不入库**（机主 2026-10-02 指示）────────────────────
+# A(camoufox, MPL-2.0) 与 B(ddddocr, MIT) 是本工程**内置的第三方部件**。
+#   用途：本机个人使用 + 打包时一并打进 exe（机主要求）
+#   规矩：**源码一律不进 git 仓库**（它们是上游项目，混进历史既踩许可边界，
+#         也让"这仓库到底是谁的代码"说不清）。只推"怎么装、怎么 import"的说明。
+# 机主本机的放置位置：`vendor/`（由 `pip install --target vendor --no-deps` 生成）
+# 唯一入库的是 `vendor/README.md`（安装说明）。
+vendor/*
+!vendor/README.md
+# 兜底：万一有人把上游仓库整个拷到别处
+camoufox/
+ddddocr/
+爬虫部件-直接可用/
+*/camoufox/
+*/ddddocr/
+
+# 运行时生成的临时工程目录（测试 ProjectIdentity(...) 会在这里落 project.yaml）
+projects/

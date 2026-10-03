@@ -151,6 +151,11 @@ DEFAULT_GLOBAL = OmegaConf.create({
     "browser_pool_size": 5,
     "browser_max_pages_per_context": 30,
     "browser_memory_limit_mb": 2048,  # 2GB — 15.4GB总内存绰绰有余
+    # [v6 补齐] 渲染兜底预算（0=禁用兜底）。**此前这个键只存在于读取端的兜底里**
+    # （page_processor 用 `cfg.get("browser_render_max", 20)`），DEFAULT_GLOBAL 里没有——
+    # 于是它既不出现在配置模板里、也无法被"唯一默认源"约束，等于一个**隐形默认值**。
+    # 工程纪律要求默认值只在这一处定义，故补上；读取端的兜底保留（防御性，两者同值）。
+    "browser_render_max": 20,
     "headless": True,
     "use_humanization": True,        # 内置人类行为模拟（interaction_engine）
     "stealth_injection_enabled": True,
@@ -171,6 +176,9 @@ DEFAULT_GLOBAL = OmegaConf.create({
     "cdp_attach": False,           # [v2.17 3.5] CDP 接管既有浏览器（实验默认关——用户已开调试端口 Chrome 时直连复用登录态/指纹）
     "cdp_port": 9222,              # 上述调试端口（Chrome --remote-debugging-port=9222 启动即可）
     "identity_bundle": False,      # [v2.17 E-P2] 身份捆绑轮换（默认关=零影响；开启时出口+cookie捆绑为虚拟用户、封锁整包退役换新）
+    # [v6 M1-c] 按站身份弹药库：每页 acquire/report 一个按站账号（Fernet 加密落库、
+    # 健康分 + 额度 + 冷却）。默认关=零影响；与上面的"身份捆绑"是两条独立策略。
+    "cookie_armory_enabled": False,
 
     # ═══════════════════════════════════════════
     # 连接池设置

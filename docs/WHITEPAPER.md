@@ -1,4 +1,4 @@
-# kiana-crawler — Technical Whitepaper (v2.19.8)
+# kiana-crawler — Technical Whitepaper (v2.19.9)
 
 **Design and Implementation of a Single-Machine Web Collection Engine for Windows**
 

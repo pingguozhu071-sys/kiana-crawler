@@ -11,8 +11,16 @@ def extract_bilibili_info(html: str, url: str) -> dict:
     # Extract bvid from URL — handle video/ and bangumi/play/ patterns
     m=re.search(r'(?:/video/|/bangumi/play/ep?)(BV[a-zA-Z0-9]+)',url)
     if m:info['bvid']=m.group(1)
-    # Also extract epid from bangumi URLs
-    epid_match=re.search(r'(?:/bangumi/play/)?ep(\d+)',url)
+    # [v6 修复] 原为 `epid_match=re.search(...)` 后**从未使用**（ruff F841 一直挂着）——
+    # 那是"想过支持番剧、但没做完"的痕迹。番剧的**标准链接**是
+    # `/bangumi/play/ep<数字>`（epid），里面**根本没有 BV**，所以本函数对它返回 bvid=''，
+    # 下游 `resolve_bilibili_video` 因 `if not bvid: return []` **直接放弃**——
+    # 即 docstring 声称的"兼容 bangumi 页面"对标准番剧链接并不成立。
+    # 这里把 epid 提取出来**放进返回值**（调用方可据此走番剧接口），
+    # 并去掉那个没人用的局部变量：留着一个不生效的变量只会让人以为已经支持了。
+    _ep = re.search(r'/bangumi/play/ep(\d+)', url)
+    if _ep:
+        info['epid'] = _ep.group(1)
     if not info['bvid']:
         # Try extracting BV from the URL query or path
         bv_match=re.search(r'(?:bvid=|/)(BV[a-zA-Z0-9]+)',url)

@@ -1,6 +1,6 @@
 # 构建与打包文档（BUILD）
 
-> 适用版本：v2.19.8（`VERSION.json` 为权威源）｜ 描述从源码到安装包的完整流程、命令与坑。
+> 适用版本：v2.19.9（`VERSION.json` 为权威源）｜ 描述从源码到安装包的完整流程、命令与坑。
 > ⚠️ 本文档曾长期滞后于代码（版本号、PO Token 路径、卸载器行为），v2.19.8 已逐处修正；
 > 引用具体行为前请以代码为准：`kiana_setup.nsi` / `KianaLauncher.spec` / `一键构建.bat`。
 
@@ -41,7 +41,7 @@
 | `pyproject.toml` mypy `python_version` | `3.12` | **类型检查目标**：类型推断按该版本的语义做 |
 | 本机实测 / CI | 3.14 / 3.12 | 开发机跑 3.14、CI runner 跑 3.12，**均通过全部测试** |
 
-> 注：`pytest` / `ruff` / `mypy` / `pyinstaller` 此前不在任何清单里（换机无法复现测试线，外部评估报告曾指出这一点），
+> 注：`pytest` / `ruff` / `mypy` / `pyinstaller` 此前不在任何清单里（换机无法复现测试线，评估报告 P2-17），
 > v2.19.3 已补入 `requirements-dev.txt`。
 | Chromium | ms-playwright 缓存（`python -m patchright install chromium`）—— 随包分发 |
 | PO Token 组件 | bgutil server（含 `build/main.js`）+ `deno.exe` —— 随包分发，**需环境变量指定路径** |
@@ -140,8 +140,8 @@ python -c "import subprocess; subprocess.run([r'C:\Program Files (x86)\NSIS\make
 #    VERSION.json         : latest / released / notes
 python tools/gen_installer_art.py             # ② 重生成安装器美术（读 VERSION.json）
 
-# ③ 门禁（10 项：版本一致性/Git卫生/全量测试/静态检查/依赖审计/密钥扫描/凭据卫生/规则资产/verify_all/构建面）
-python tools/release_check.py                 # 必须 10/10 PASS
+# ③ 门禁（14 项：版本一致性/Git卫生/全量测试/静态检查/依赖审计/密钥扫描/凭据卫生/规则资产/verify_all/构建面/结构指纹/静默失败扫描/脱敏链路/同一能力多份实现）
+python tools/release_check.py                 # 必须 14/14 PASS
 
 # ④ 打包（见第三节：双包 + 产物验证 + NSIS）
 
@@ -172,7 +172,7 @@ git tag vX.Y.Z-final
 
 ---
 
-## 六、常见坑（实测踩过的坑）
+## 六、常见坑（血泪清单）
 
 | # | 坑 | 对策 |
 |---|---|---|
