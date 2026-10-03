@@ -936,9 +936,9 @@ class UniversalDownloader:
                 logger.warning(f"PO Token 检查异常: {_pe}")
         # [v2.19.8] 平台直链 resolver：表驱动（抖音/小红书/快手/网易云），替代原先写死的抖音块。
         # 命中平台 → 转直链后继续走流式下载；未命中/解析失败 → url 原样不变（行为与旧版一致）。
-        # `_din` = "原 URL 是抖音页"，下游 douyinvod 直链的特殊流式分支仍在用它 —— 这个变量是被
-        # 本工程自己的 F821 守卫测试当场抓回来的：表驱动重构时我删了它但下游仍在引用，真跑到那条
-        # 分支就是 NameError（守卫先于运行发现问题，见 v2.19.8 DEVLOG）。必须在替换 url **之前**算。
+        # 本工程自己的 F821 守卫测试（`tests/test_v219_concurrency.py`，以 ruff --select F821 扫描
+        # 引擎目录）会在导入期抓出「已删除却仍被引用」的名字：表驱动重构时 `_din` 一度被删而下游
+        # 仍在用，真跑到那条分支就是 NameError。故该变量必须在替换 url **之前**算。
         _din = bool(url and ('douyin.com' in url.lower() or 'iesdouyin.com' in url.lower()))
         _direct = await self.resolve_direct_url(url)
         if _direct:

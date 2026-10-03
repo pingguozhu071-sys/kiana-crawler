@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path as _P
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
-# [FIXED & MODIFIED] v2.14 阶段4 供应链：动态解析路径（原硬编码 miku0 用户名+
+# [FIXED & MODIFIED] v2.14 阶段4 供应链：动态解析路径（原硬编码用户名+
 # Python314 版本绝对路径——换机/升 Python 构建必炸）。照抄 universal_downloader
 # 的动态定位模式。
 def _find_ddddocr_dir():

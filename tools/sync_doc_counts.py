@@ -14,6 +14,12 @@
     python tools/sync_doc_counts.py            # 同步
     python tools/sync_doc_counts.py --check    # 只检查，不同步（红了就退出码 1）
 
+退出码：
+    0  文档已一致（同步模式即「已同步成功」）
+    1  文档数字过期 / 同步后仍不一致（既有语义，勿改）
+    3  验收文档不在本仓库里 —— 公开快照的正常状态，**未读写任何文件**
+       （不用 2：argparse 把「命令行用法错误」占了，避免两种含义撞车）
+
 [v6 补缺口] 现在**行数与模块数都同步**（此前模块数漏了，
 每加一个模块都要手工改文档，否则 `test_doc_claims` 红）。
 
@@ -45,6 +51,12 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parent.parent
 PKG = ROOT / "kiana_vnext_plus"
 DOC = ROOT / "docs" / "工程全景介绍-对外评审版.md"
+
+# [v2.19.9 修复] 该文档**不随公开仓库发布**（内部验收材料，只在私有工程里）。
+# 下面两个常量服务于 main() 顶部的守卫：打印用相对路径（不吐本机绝对路径），
+# 退出码 3 = 「目标文档缺失」——与「不一致(1)」「用法错误(argparse 的 2)」区分开。
+DOC_REL = "docs/工程全景介绍-对外评审版.md"
+EXIT_NO_DOC = 3
 
 # 引擎行数在文档里的写法：`| 引擎包 | 70 个模块、24,821 行（...）|`
 #
@@ -168,6 +180,19 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="同步验收文档里的引擎规模数字")
     ap.add_argument("--check", action="store_true", help="只检查不同步（不一致则退出 1）")
     args = ap.parse_args()
+
+    # ── [v2.19.9 修复] 验收文档**不随公开仓库发布**，缺了必须**明说** ──────────
+    # 它是内部验收材料，只在私有工程里；公开快照的 `docs/` 下没有它。
+    # 此前本函数一进来就读它，于是全新 clone 上跑本工具**必崩**（实测）：
+    #     FileNotFoundError: .../docs/工程全景介绍-对外评审版.md
+    # 本工具存在的唯一目的，就是把实测数字写回**那份文档**；没有它就没有同步目标。
+    # 于是：说清原因 → 退出码 3（可脚本判定）→ **一个文件都不碰**。
+    # 既不崩，也不假装「已同步」（静默 return 0 会让调用方以为写成功了）。
+    if not DOC.exists():
+        print(f"未同步：{DOC_REL} 不在本仓库里 —— 没有可同步的目标。")
+        print("  该文档是内部验收材料，不随公开快照发布（公开 docs/ 下没有它）。")
+        print("  本次未读写任何文件；退出码 3 = 「目标文档缺失」，不是崩溃、也不是成功。")
+        return EXIT_NO_DOC
 
     n, tot = measure()
     want = f"{tot:,}"

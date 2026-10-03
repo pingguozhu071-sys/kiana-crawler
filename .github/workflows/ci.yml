@@ -58,7 +58,7 @@ jobs:
               sys.exit(f"❌ 版本号不一致: {vers}")
           print(f"✅ 版本一致: {v_json}")
 
-      - name: ② 静态检查（基线锁死 ruff≤84 / mypy≤104）
+      - name: ② 静态检查（基线锁死 ruff≤80 / mypy≤99）
         run: |
           python -m ruff check kiana_vnext_plus --output-format=concise
           python -m mypy kiana_vnext_plus --ignore-missing-imports

@@ -1,6 +1,6 @@
 """v2.19 并发回归：robots 门闸无竞态 / 渲染预算不超额 / 后台任务可追踪
 
-对应 docs/优化计划_v219.md 批次 3.1-3.3。全部离线。
+对应内部优化计划批次 3.1-3.3。全部离线。
 """
 import asyncio
 import inspect
@@ -138,7 +138,7 @@ class TestQualityCleanups(unittest.TestCase):
                          "死访问器 get_challenge_types 应已删除")
 
     def test_gate_baseline_locked(self):
-        """门禁静态基线应为锁死值（84/104），不得回到 100/120 的宽松余量"""
+        """门禁静态基线应为锁死值（80/99），不得回到 100/120 的宽松余量"""
         src = (Path(__file__).resolve().parents[1] / "tools" / "release_check.py").read_text(
             encoding="utf-8")
         self.assertIn("RUFF_MAX", src)

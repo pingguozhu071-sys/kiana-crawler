@@ -316,7 +316,7 @@ class TestMergeCookiePathValue(unittest.TestCase):
 class TestCookieLoginBridge(unittest.TestCase):
     """后台桥：真线程、真事件循环、真投递 —— 但**协程是假的**（绝不弹浏览器）。
 
-    ## 桩的签名纪律（CLAUDE.md 第九节）
+    ## 桩的签名纪律（本工程约定）
 
     桥对协程工厂的调用是 `self._opener(site, url)`（[v7] 起多一个 `url`）。
     桩必须**按真实签名**写 —— 窄签名桩（只收 `site`）会让被测代码走异常分支，
@@ -599,7 +599,7 @@ class TestLoginButtonWiring(unittest.TestCase):
             self.assertNotIn(bad, names, f"worker 线程里用了 {bad}")
 
     def test_result_delivery_goes_through_post_event(self):
-        """CLAUDE.md 陷阱表：worker 线程 emit 信号偶发崩 → 统一走 postEvent。"""
+        """本工程陷阱表：worker 线程 emit 信号偶发崩 → 统一走 postEvent。"""
         d = _func(self.tree, "_deliver_async", cls="KianaV9")
         s = ast.unparse(d)
         self.assertIn("postEvent", s)
@@ -677,7 +677,7 @@ class TestLoginButtonWiring(unittest.TestCase):
         """后台探测必须照本工程既有模式：daemon 线程 + `postEvent` 回主线程。
 
         - **不许 `asyncio.run()`**：它会把事件循环塞进 Qt 主线程（另有测试全局钉死）；
-        - **不许跨线程 Signal**（CLAUDE.md 陷阱表：worker 线程 emit 信号偶发崩）；
+        - **不许跨线程 Signal**（本工程陷阱表：worker 线程 emit 信号偶发崩）；
         - 控件值**在主线程取**，线程里只算文本。
         """
         f = _func(self.tree, "_refresh_privacy_status_async", cls="KianaV9")

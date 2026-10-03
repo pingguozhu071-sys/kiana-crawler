@@ -1,8 +1,9 @@
 # 架构文档（ARCHITECTURE）
 
-> 适用版本：**四层结构与数据流仍然适用**，但本文档停在 v2.18.2，未覆盖 v2.19.x 的
-> SSRF 逐跳闸、租约/CAS 收口、脱敏边界（handler 挂载与导出副本）等变化。
-> 现行事实以根目录 本快照内的源码与文档 为准。
+> 适用版本：**四层结构与数据流仍然适用**；条目按当前迭代 v2.19.9 校正了规模类陈述
+> （模块数、业务表数、schema 版本）。文档主体停在 v2.18.2 的叙述粒度，尚未逐条覆盖
+> v2.19.x 的 SSRF 逐跳闸、租约/CAS 收口、脱敏边界（handler 挂载与导出副本）等变化。
+> 现行事实以本快照内的源码与文档为准。
 > 描述 Kiana Vnext Plus 的分层结构、核心链路、模块职责、数据结构与产物格式。
 
 ---
@@ -19,7 +20,7 @@
 │   launcher_v8.py → EngineBridge（GUI 与引擎线程的边界）       │
 │   kiana_vnext_plus/cli.py（CLI 装配）                        │
 ├─────────────────────────────────────────────────────────────┤
-│ ③ 引擎层（kiana_vnext_plus/，67 模块）                       │
+│ ③ 引擎层（kiana_vnext_plus/，71 模块）                       │
 │   主循环 → 任务队列 → 单页流水线 → 解析/下载/入队             │
 ├─────────────────────────────────────────────────────────────┤
 │ ④ 支撑层                                                     │
@@ -27,7 +28,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**并发模型（重要）**：**单进程 + asyncio 协程并发**，不是多线程也不是多进程。20-50 路协程同时在飞，线程只用于 `asyncio.to_thread` 卸载阻塞调用（如 cv2 图像处理、yt-dlp 解析）。这意味着：
+**并发模型（重要）**：**单进程 + asyncio 协程并发**，不是多线程也不是多进程。并发上限在**三级之间仲裁**——全局、按域、按出口——**取最小值**：每域默认 **20** 路，每出口默认 **10** 路，全局默认按机器自适应为 `max(8, min(32, 2 × 逻辑核数))`（除非显式配置）。线程只用于 `asyncio.to_thread` 卸载阻塞调用（如 cv2 图像处理、yt-dlp 解析）。这意味着：
 - 引擎内任何**跨 `await` 的读-改-写**都是真竞态，必须用锁或 CAS；
 - 引擎内任何**长阻塞同步调用**都会冻住整个循环（历史多次事故根源）。
 
@@ -84,13 +85,13 @@
 
 ---
 
-## 三、模块职责（按功能分组，67 模块）
+## 三、模块职责（按功能分组，71 模块）
 
 ### 3.1 主控与调度
 | 模块 | 职责 |
 |---|---|
 | `crawler.py` | **主循环**（KianaCrawler.run）：种子处理、取批、任务派发、看门狗（page_timeout）、视频 worker、跨批延迟、收尾 |
-| `frontier.py` | **任务队列 + 持久化**（FrontierDB）：SQLite、写队列批量 flusher、租约管理、血缘、死信落盘、10 张表 |
+| `frontier.py` | **任务队列 + 持久化**（FrontierDB）：SQLite、写队列批量 flusher、租约管理、血缘、死信落盘、**8 张队列业务表**（导出快照库是另一个 db 文件，见第四节） |
 | `page_processor.py` | **单页流水线**（PageProcessor.process_job）：上文的 ①②-⑭ 全流程 |
 | `main.py` / `cli.py` | 装配与 CLI 参数解析 |
 | `redis_frontier.py` | 分布式队列备选实现（实验，默认不用） |
@@ -176,9 +177,16 @@
 
 ---
 
-## 四、数据库结构（SQLite，`frontier.db`）
+## 四、数据库结构（两个独立的 SQLite 库）
 
-引擎的持久化中枢，**10 张业务表** + 1 张 FTS 虚拟表。迁移由 `PRAGMA user_version` 驱动（当前 v4），幂等 ALTER。
+引擎的持久化分**两个互不相同的库文件**，两者的表数与迁移方式都不同：
+
+| 库 | 建表位置 | 表 | 迁移 |
+|---|---|---|---|
+| **引擎队列库**（`frontier.db`） | `frontier.py` | **8 张业务表** | 由 `PRAGMA user_version` 驱动（`SCHEMA_VERSION = 6`，即 **schema v6**），幂等 ALTER |
+| **导出快照库**（`data.sqlite`，由 `export --format sqlite` 按需生成） | `enhancements.py` | **2 张业务表**（`media` / `scrape`）+ **1 张 FTS5 虚拟表**（`scrape_fts`） | 无版本号；每次导出重建（快照语义） |
+
+合计 **10 张业务表 + 1 张 FTS5 索引**。下文各表除 `media` / `scrape` / `scrape_fts` 外，均属**引擎队列库**。
 
 ### frontier —— 任务队列（核心表）
 | 列 | 说明 |
@@ -208,8 +216,8 @@
 `video_url`(PK) / `domain` / `status` / `file_path` / `progress` / `fail_count` / `created_at` / `file_size`
 索引：`idx_video_status(status, domain)`
 
-### media / scrape —— 导出快照表
-导出 SQLite 时的载体（`media` 媒体记录、`scrape` 页面正文）；配套 **`scrape_fts`（FTS5 虚拟表，trigram 分词，支持中文全文检索）**，每次导出 rebuild（快照语义）。
+### media / scrape —— 导出快照表（属**导出快照库**，与上文各表不同库）
+导出 SQLite 时的载体（`media` 媒体记录、`scrape` 页面正文）；配套 **`scrape_fts`（FTS5 虚拟表，trigram 分词，支持中文全文检索）**，每次导出 rebuild（快照语义）。该库由 `export --format sqlite` 生成，与引擎队列库 `frontier.db` 是两个独立文件，因此不计入引擎队列库的 8 张业务表。
 
 ### cooldowns —— 域名冷却持久化
 `domain`(PK) / `until_epoch` / `tier` / `updated_at` —— 重启后恢复风控状态（不再一重启就忘光）
@@ -269,8 +277,8 @@ pop_batch 领取 → leased_at/lease_expires 写入
 ├── stats.jsonl                 # 结构化进度快照（每批一行 + 收尾 final 行）
 ├── checkpoint.json             # 断点统计参照
 └── 导出文件（按需生成）
-    ├── export.xlsx             # Excel（按域分 sheet + 汇总页）
-    └── export.sqlite           # SQLite 快照（含 scrape_fts 全文索引）
+    ├── data.xlsx             # Excel（按域分 sheet + 汇总页）
+    └── data.sqlite           # SQLite 快照（2 张业务表 + scrape_fts 全文索引）
 ```
 
 **stats.jsonl 单行字段**：`ts` / `done` / `failed` / `pending` / `total` / `batch` / `videos` / `images` / `bytes`（收尾行额外 `final: true`）。GUI 与 `tools/dashboard.py` 消费此文件。
@@ -281,7 +289,7 @@ pop_batch 领取 → leased_at/lease_expires 写入
 
 ```
 模块导入
-  ├─ from launcher_v8 import CONFIG_FILE, EngineBridge   ← ★硬依赖，v8 不可删
+  ├─ from launcher_v8 import CONFIG_FILE, EngineBridge   ← 硬依赖，v8 不可删
   └─ from kiana_vnext_plus import wallpaper, config
 
 KianaV9(FluentWindow)
@@ -304,7 +312,9 @@ KianaV9(FluentWindow)
     → 应用于 logp/datap/taskp 全部卡片 + home 三张统计卡
 ```
 
-**性能红线（v2.18.1 血泪）**：引擎桥与页面构建**必须只在 `__init__` 执行一次**。曾因缩进事故把这段塞进 `_sig_place`，导致窗口每次 Show/Resize 都重建整个界面（单次 1.2s，事件循环停顿 7.6s）。`tools/gui_perf_probe.py` 是这条红线的回归门禁。
+**性能红线**：引擎桥与页面构建**必须只在 `__init__` 执行一次**。历史事故：该段曾被误缩进进
+`_sig_place`，导致窗口每次 Show/Resize 都重建整个界面（单次 1.2s，事件循环停顿 7.6s）。
+`tools/gui_perf_probe.py` 是这条红线的回归门禁。
 
 ---
 

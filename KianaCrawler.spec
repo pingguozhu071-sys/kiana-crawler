@@ -5,7 +5,7 @@ from pathlib import Path as _P
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
 
-# [FIXED & MODIFIED] v2.14 阶段4 供应链：动态解析路径（原硬编码 miku0 用户名+
+# [FIXED & MODIFIED] v2.14 阶段4 供应链：动态解析路径（原硬编码用户名+
 # Python314 绝对路径——换机构建必炸；与 KianaLauncher.spec 同款修复）
 def _find_ddddocr_dir():
     # [v6] **优先工程内的 vendor 副本**（用户要求"打包也打进去"），

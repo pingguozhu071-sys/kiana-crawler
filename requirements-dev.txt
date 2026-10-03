@@ -10,10 +10,10 @@
 #
 # 用法：
 #     python -m pytest tests -q                      # 全量测试（离线，无需网络）
-#     python -m pytest tests --cov=kiana_vnext_plus   # 带行级覆盖率（基线 52%，见 docs/DEVLOG.md）
-#     python -m ruff check kiana_vnext_plus           # 静态检查（基线锁死 ≤84，见 tools/release_check.py）
+#     python -m pytest tests --cov=kiana_vnext_plus   # 带行级覆盖率（接入时基线 52%，仅报告不设阈值）
+#     python -m ruff check kiana_vnext_plus           # 静态检查（基线锁死 ≤80，见 tools/release_check.py）
 #     python -m mypy kiana_vnext_plus --ignore-missing-imports
-#     python tools/release_check.py --skip-network    # 发版门禁（10 项）
+#     python tools/release_check.py --skip-network    # 发版门禁（14 项）
 #
 # ⚠️ 版本说明：以下为 v2.19.2 发版时**实测通过**的版本（门禁静态基线 ruff≤84/mypy≤104
 #    即在该组合下测得）。升级这些工具后需重跑 release_check 并按需调整锁死基线。

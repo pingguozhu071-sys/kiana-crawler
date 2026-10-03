@@ -28,8 +28,8 @@ import urllib.request
 from pathlib import Path
 
 # [v6 修复·推仓库前清理] 原来这里把**用户本机的绝对路径**当默认值：
-#     SRC  = ... else r"C:\Users\miku0\AppData\Local\Temp\kiana-wx3"
-#     DEST = ... else r"C:\Users\miku0\Desktop\Kiana爬取成果-公众号"
+#     SRC  = ... else r"C:\Users\<用户名>\AppData\Local\Temp\kiana-wx3"
+#     DEST = ... else r"C:\Users\<用户名>\Desktop\Kiana爬取成果-公众号"
 # 推到别人的仓库里，这两行会指向**别人机器上不存在的目录**，
 # 还顺带暴露了原作者的用户名。**改成两个参数都必填**，报错说清怎么用。
 if len(sys.argv) <= 2:

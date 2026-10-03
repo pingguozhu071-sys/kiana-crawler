@@ -15,7 +15,7 @@
 1. **不许阻塞**：桩住扫描子进程让它"挂着"，`_run_priv_scan()` 必须**秒回**；
 2. **不许丢结果**：异步回来之后，结论照样要落到**原来看得见的地方**（toast）。
    只把它丢进线程却没人显示 = "异步了，结论没了"，比同步假死更隐蔽；
-3. **不许跨线程 Signal / `asyncio.run()`**（CLAUDE.md 陷阱表 + 本文件的 AST 断言）；
+3. **不许跨线程 Signal / `asyncio.run()`**（本工程的开发规范 陷阱表 + 本文件的 AST 断言）；
 4. **不许弹第二个窗口**：打包版里 `sys.executable` 就是 GUI 自身、`tools/` 又没随包
    分发 —— 拿它去跑脚本等于**再弹一个 Kiana 窗口**。这条纯逻辑判据在这里单测。
 
@@ -194,7 +194,7 @@ class TestPrivScanWiring(unittest.TestCase):
         self.assertIn("daemon", src, "必须是 daemon 线程（否则关窗口时会被挂住）")
         self.assertIn("_deliver_async", src, "结果没经 postEvent 投递回主线程")
         self.assertNotIn("asyncio.run(", src)
-        self.assertNotIn("Signal", src, "CLAUDE.md 陷阱表：worker 线程 emit 信号偶发崩")
+        self.assertNotIn("Signal", src, "本工程的开发规范 陷阱表：worker 线程 emit 信号偶发崩")
 
     def test_result_is_delivered_back_and_dispatched(self):
         """投递出去还得有人接：`event()` 必须分发 `priv_scan` 这一路，否则结果掉进黑洞。"""

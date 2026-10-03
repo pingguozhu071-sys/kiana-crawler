@@ -108,7 +108,7 @@ def save_captcha_keys(keys: dict) -> bool:
 #     · 全仓**没有** env / argv / 外部工具 / 导出件需要它：`DEEPSEEK_API_KEY`
 #       只被 `run_crawler` 从注册表搬进 `os.environ`，**从来没有任何代码读它**；
 #       `llm_client.LLMClient` 收的是构造参数里的 `api_key`，不碰配置文件。
-#     · 也没有任何注释说"故意留明文"；相反 `爬虫功能施工方案.md` 的 v2.19.8 附注
+#     · 也没有任何注释说"故意留明文"；相反 内部施工方案 的 v2.19.8 附注
 #       写明"若要统一，按 v2.19.7 的 privacy_store 原语改造即可（含旧明文读到即迁移）"。
 #   ⇒ 结论：这是**补完一处已决定却漏掉的不一致**，不是新增风险面。
 #

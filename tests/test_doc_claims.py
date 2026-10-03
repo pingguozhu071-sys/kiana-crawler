@@ -20,6 +20,10 @@
 2. **git 计数类**（提交数/tag 数）——**只查"文档内部是否自洽"**，不与 git 精确比对。
    原因：这类数字**每次提交都会变**，若与 git 比对，则"修文档"这个提交本身就会让它失败——
    那是自指陷阱。查自洽同样能挡住"31 vs 23"那种矛盾。
+
+**在公开快照里的行为**：`docs/工程全景介绍-对外评审版.md` **不随公开仓库发布**
+（它是内部验收材料，只存在于私有工程）→ 那种情况下本模块**整模块显式 skip**，
+原因打进 skip 行 —— 见下方 `DOC` 处的守卫。**跳过不等于通过**。
 """
 import os
 import re
@@ -28,10 +32,48 @@ import sys
 import unittest
 from pathlib import Path
 
+try:
+    import pytest
+except ImportError:  # 只为保留「没装 pytest 也能直接跑本文件」的原能力，见下方 DOC 守卫
+    pytest = None
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 DOC = ROOT / "docs" / "工程全景介绍-对外评审版.md"
+
+# ─────────────────────────────────────────────────────────────
+# [v2.19.9 修复] 这份文档**不随公开仓库发布** —— 它是内部验收材料，
+# 只存在于私有工程；公开快照的 `docs/` 下没有它。
+#
+# 此前这里是**裸读**（`DOC.read_text()`，没有 exists/skip 守卫），后果实测：
+# 任何人 clone 公开快照跑 `python -m pytest tests`，本文件**当场红 8 条**，
+# 全是 `FileNotFoundError: .../docs/工程全景介绍-对外评审版.md`。
+# 更坏的是它长得像「文档里的数字不对」，把人往完全错误的方向引。
+#
+# 现在分两条路，**判据与断言强度一个字节都没改**：
+#   · 文档在   → 原样跑（私有工程走的就是这条路）；
+#   · 文档不在 → **整模块显式 skip**，skip 行里写明为什么不跑。
+# 为什么不逐条 skip：下面三个测试类**每一条**都要读这份文档，拆开只是把
+# 同一句话重复 8 遍。
+# 为什么不静默 return：静默通过 == 守卫失效，本工程明文最忌这个
+# （同口径见 tests/test_silent_failure_scan.py）。
+# ─────────────────────────────────────────────────────────────
+# 注意：原因里**不写死用例条数** —— 写死就会随加用例悄悄过期，
+# 而那种"没人核对的小数字"正是本文件要防的东西；条数由 pytest 自己报。
+_DOC_MISSING_REASON = (
+    "docs/工程全景介绍-对外评审版.md 不随本仓库发布（内部验收材料，只在私有工程里）；"
+    "本文件每一条判据都要读它，故整模块跳过 —— 是「没跑」不是「通过」"
+)
+
+if not DOC.exists():
+    if pytest is not None:
+        # allow_module_level：全部用例都依赖该文档，跳过必须在收集期生效
+        pytest.skip(_DOC_MISSING_REASON, allow_module_level=True)
+    # 没装 pytest 又直接 `python tests/test_doc_claims.py`：同一句话打出来再退出，
+    # 退出码 0 —— 文档缺失不是测试失败，但也绝不静默
+    print(f"SKIP: {_DOC_MISSING_REASON}")
+    raise SystemExit(0)
 
 
 def _text() -> str:

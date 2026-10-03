@@ -40,15 +40,15 @@ The design is organized around four problems rather than around site coverage:
 
 | Item | Value |
 |---|---|
-| Engine | **67 modules · 22,635 lines** |
-| Desktop UI | **1,645 lines** · five-page FluentWindow |
-| Tests | **675 cases** (674 pass / 1 skip / 0 fail) · **fully offline** |
+| Engine | **71 modules · 27,361 lines** |
+| Desktop UI | **3,652 lines** · five-page FluentWindow |
+| Tests | **≈1,490 cases** (1,483 test functions), all runnable offline |
 | Dependencies | **25** runtime + **6** dev, **all pinned with `==`** |
-| Site rules | **12** declarative YAML files — a new site is one file, zero code |
+| Site rules | **12** declarative YAML files, plus **2** template files — a new site is one file, zero code |
 | Proxy routing | **59** domestic domains forced to direct connection (proxy bypass) |
-| Concurrency | Single-process asyncio · **20–50 coroutines** |
-| Queue | SQLite, **8 tables**, versioned migrations (`PRAGMA user_version`) |
-| Release gate | **10 checks**, any failure blocks the release |
+| Concurrency | Single-process asyncio · three-level cap — global / per domain / per exit node, **the minimum wins**: global host-adaptive `max(8, min(32, 2 × cores))` · **20** per domain · **10** per exit node |
+| Queue | Engine queue DB (`frontier.py`, SQLite): **8 tables**; the separate export-snapshot DB (`enhancements.py`) adds **2 tables + 1 FTS5 index** · versioned migrations (`PRAGMA user_version`, schema **v6**) |
+| Release gate | **14 checks**, any failure blocks the release |
 | Deliverable | Two exes (PyInstaller onedir) + NSIS multilingual installer · ~542 MB |
 
 ---
@@ -57,15 +57,15 @@ The design is organized around four problems rather than around site coverage:
 
 Each highlight follows the same four-part structure: **problem → implementation → key figures → modules**.
 
-### ① Five-tier fallback: content reachability
+### 1. Five-tier fallback: content reachability
 
 > **Problem**: Sites differ in how they gate content. Some serve it directly; some fingerprint the TLS handshake; some render only after real JS execution. No single strategy covers all three.
 
 - **Implementation**: Five tiers ordered by cost — protocol (TLS impersonation) → stealth → TLS switch → real browser → direct. A failure or a challenge promotes the request to the next tier. If the cheap path succeeds, the browser is never launched.
-- **Key figures**: 5 tiers · 20–50 concurrent coroutines · browser rendering has its own budget cap (no browser storms)
+- **Key figures**: 5 tiers · three-level concurrency cap — global host-adaptive `max(8, min(32, 2 × cores))`, **20** per domain, **10** per exit node, **the minimum wins** · browser rendering has its own budget cap (no browser storms)
 - **Modules**: `engine_router.py` (scheduling) · `protocol_engine.py` · `solver_engine.py`
 
-### ② Platform resolvers: direct media URL extraction
+### 2. Platform resolvers: direct media URL extraction
 
 > **Problem**: Media sites keep playable URLs inside embedded JSON, signed and time-limited. Handing the page URL to a generic downloader frequently misses the highest available quality.
 
@@ -73,7 +73,7 @@ Each highlight follows the same four-part structure: **problem → implementatio
 - **Key figures**: 4 resolvers (Douyin / Xiaohongshu / Kuaishou / NetEase Cloud) · one unified schema · every extracted URL re-checked
 - **Modules**: `media_schema.py` · `*_resolver.py` · `universal_downloader.py` (table-driven dispatch)
 
-### ③ Lease + CAS: exactly-once processing
+### 3. Lease + CAS: exactly-once processing
 
 > **Problem**: The two classic concurrency failures — two coroutines processing the same page (duplicate exports), or a result written after another worker has already claimed the work (corrupted state).
 
@@ -81,7 +81,7 @@ Each highlight follows the same four-part structure: **problem → implementatio
 - **Key figures**: 60 s heartbeat · 300 s per-page watchdog (configurable, can be disabled) · tri-state CAS (won / lost / DB failure)
 - **Modules**: `frontier.py` · `page_processor.py`
 
-### ④ Watchdog and two-level rate limiting: run stability
+### 4. Watchdog and two-level rate limiting: run stability
 
 > **Problem**: A single hung page can stall an entire batch. Naive rate limiting turns into a retry storm that never terminates.
 
@@ -89,7 +89,7 @@ Each highlight follows the same four-part structure: **problem → implementatio
 - **Key figures**: watchdog **300 s** (normal page < 60 s, 5× headroom) · per-domain concurrency **20** · `Retry-After` capped at **300 s**
 - **Modules**: `crawler.py` · `rate_limiter.py` · `concurrency.py`
 
-### ⑤ Resumable downloads without re-encoding
+### 5. Resumable downloads without re-encoding
 
 > **Problem**: An interrupted large download should not restart from zero, and re-encoding destroys the original quality.
 
@@ -97,15 +97,15 @@ Each highlight follows the same four-part structure: **problem → implementatio
 - **Key figures**: checked byte counts + atomic placement · m3u8 fragment support with AES-128 decryption · ffmpeg used only to **merge**, never to re-encode
 - **Modules**: `universal_downloader.py` · `m3u8_downloader.py` · `media_downloader.py`
 
-### ⑥ Hop-by-hop SSRF gate
+### 6. Hop-by-hop SSRF gate
 
 > **Problem**: **Entry-point URL validation alone is not sufficient.** An external image URL can return a 302 pointing at an internal address, and the underlying HTTP library will follow it — **the internal response is then written to disk as an ordinary image.** Reproduced locally with two loopback services.
 
 - **Implementation**: Every outbound fetch goes through one shared primitive — validate at the entry, disable automatic redirects, then **follow and re-validate hop by hop**. Hostnames are normalised first (IPv6 zone ids and trailing-dot FQDNs both used to slip past the blocklist). Private-network detection covers the ranges the standard library misses. DNS verdicts carry a 90-second expiry, defeating the "resolve to public, then repoint to internal" rebinding trick.
-- **Key figures**: redirect cap **10 hops** · DNS verdict TTL **90 s** · 25 private-address forms covered · decimal, hex and octal IP variants handled
+- **Key figures**: redirect cap **10 hops** · DNS verdict TTL **90 s** · **2** additional IPv4 ranges beyond the standard library's private-address checks (CGNAT `100.64.0.0/10`, 6to4 relay `192.88.99.0/24`) · numeric-literal hostnames delegated to the system resolver, covering decimal, hex, octal and shortened IP forms
 - **Modules**: `url_utils.py` (the highest fan-in module in the repo) · every download and discovery path
 
-### ⑦ Three-layer redaction and its explicit boundaries
+### 7. Three-layer redaction and its explicit boundaries
 
 > **Problem**: Phone numbers, emails and tokens inside URLs leaking into results is a real risk. **Redaction also has boundaries** — applied in the wrong place it breaks functionality outright.
 
@@ -114,12 +114,12 @@ Each highlight follows the same four-part structure: **problem → implementatio
 - **Key figures**: **19** sensitive URL parameter classes · phone / email / IP · record-level recursion to depth 6
 - **Modules**: `sanitizer.py` · `config.py` (wiring) · `page_processor.py` (export copies)
 
-### ⑧ Ten-check release gate
+### 8. Fourteen-check release gate
 
 > **Problem**: In a single-maintainer project, the usual cause of a broken release is an assumption that went unchecked.
 
-- **Implementation**: One command runs ten checks, and **any failure blocks the release**: version consistency across four files · clean git tree · full test suite · static analysis (baseline locked, may only go down) · dependency audit · secret scan · credential hygiene · rule and asset integrity · live multi-site regression · build surface.
-- **Key figures**: **10 checks** · **675 offline test cases** · static baselines pinned to current counts (they may only go down)
+- **Implementation**: One command runs fourteen checks, and **any failure blocks the release**: version consistency across four files · clean git tree · full test suite · static analysis (baseline locked, may only go down) · dependency audit · secret scan · credential hygiene · rule and asset integrity · live multi-site regression · build surface · sample structure fingerprint · silent-failure scan on hot paths · redaction-chain self-check · duplicate-capability scan. A check that cannot produce a verdict reports `SKIP` rather than passing by default.
+- **Key figures**: **14 checks** · **≈1,490 offline test cases** (1,483 test functions) · static baselines pinned to the measured values (ruff **80** / mypy **99** / F-class on `tools`+`tests` **42**) and may only go down
 - **Modules**: `tools/release_check.py` · `.github/workflows/ci.yml` · `tests/`
 
 ---
@@ -130,7 +130,7 @@ Each highlight follows the same four-part structure: **problem → implementatio
 launcher_v9.py          GUI entry (five pages: home / logs / data / tasks / settings)
   └ launcher_v8.py      only 4 live symbols (engine bridge, log bridges, config path, secrets)
 run_crawler.py          CLI entry — also the GUI's in-process engine
-  └ crawler.py          engine assembly (7 _init_* = wiring table, run() = main loop)
+  └ crawler.py          engine assembly (8 _init_* = wiring table, run() = main loop)
       ├ engine_router.py      five-tier fallback scheduling
       ├ page_processor.py     single-page pipeline
       ├ frontier.py           SQLite queue (lease / CAS / migrations)
@@ -168,7 +168,7 @@ python run_crawler.py -f urls.txt -d 3 -m 500 -o ./out
 # 4. run the test suite (offline)
 python -m pytest tests -q
 
-# 5. run the release gate (10 checks)
+# 5. run the release gate (14 checks)
 python tools/release_check.py
 ```
 
@@ -184,7 +184,7 @@ Known limitations are stated explicitly, including the ones that remain open.
 
 **Where its edges actually are**
 
-- **It does handle anti-bot measures on public pages**: TLS impersonation, a real-browser fallback, challenge solving, optional CAPTCHA-service keys. That is a core capability — it is documented in highlight ① above rather than omitted.
+- **It does handle anti-bot measures on public pages**: TLS impersonation, a real-browser fallback, challenge solving, optional CAPTCHA-service keys. That is a core capability — it is documented in highlight 1 above rather than omitted.
 - **It does not touch account permissions**: login walls, paywalls and account-scoped content are reached only with cookies *you* supply; when that is not enough it reports a readable error instead of forcing its way through.
 - **Not a framework, not a service, not multi-user.** It is designed for one person on one machine.
 - **No personal data collection.** Contact details, emails and IPs are redacted before anything is written.

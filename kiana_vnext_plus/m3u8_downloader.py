@@ -318,7 +318,7 @@ class M3U8Downloader:
         #   ① `concat` 合并**本来不需要编码** —— `-c copy` 是流拷贝（I/O 级、几秒完），
         #      而重编码要先解码再编码，**反而更慢**："GPU 加速"在这里是个误解；
         #   ② 它会**静默把画质压到 5 Mbps**，与工程自己写明的「零转码红线」直接冲突
-        #      （见 universal_downloader 与 docs/工程全景介绍-对外评审版.md）。
+        #      （见 universal_downloader 与 本工程的对外评审材料）。
         # 现改为**只调换顺序**（不增不减任何能力）：主路径一律 `-c copy` 无损拷贝，
         # 只有它失败时才动用重编码兜底 —— 并把"这是有损兜底"明确说出来，不静默。
         cmd_copy = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(filelist),

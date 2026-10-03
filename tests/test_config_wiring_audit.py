@@ -22,12 +22,22 @@
 > 已知清单**不是"免检名单"**，而是**已评估过、决定暂不提供入口**的登记
 > （多数是内部调优参数：GC 阈值 / CPU 水位 / 自适应并发…）。
 > 它必须**逐条有结论**——这正是 `03-终检与闭环方案` 说的"登记表不允许有空白格"。
+
+**在公开快照里的行为**：`docs/后续待开功能.md` **不随公开仓库发布**（内部交接文档，
+只存在于私有工程）→ 只有一条判据依赖它（`test_gaps_are_documented_in_handover`），
+文档不在时**那一条显式 skip**，原因打进 skip 行——见 `_HANDOVER_DOC` 处的守卫。
+**跳过不等于通过**；本文件其余判据与文档是否在场无关，照常逐个断言。
 """
 import os
 import re
 import sys
 import unittest
 from pathlib import Path
+
+try:
+    import pytest
+except ImportError:  # 只为保留「没装 pytest 也能直接跑本文件」的原能力，见下方 _HANDOVER_DOC 守卫
+    pytest = None
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -38,6 +48,33 @@ PKG = ROOT / "kiana_vnext_plus"
 
 # 入口文件：GUI 壳 + 命令行入口
 ENTRY_FILES = ("launcher_v9.py", "launcher_v8.py", "run_crawler.py")
+
+# ─────────────────────────────────────────────────────────────
+# [v2.19.9 修复] 交接文档**不随公开仓库发布** —— 它是内部交接材料，
+# 只存在于私有工程；公开快照的 `docs/` 下没有它。
+#
+# 此前 `test_gaps_are_documented_in_handover` 里是**裸读**
+# （`(ROOT / "docs" / "后续待开功能.md").read_text(...)`，没有 exists/skip 守卫），
+# 后果实测：任何人 clone 公开快照跑 `python -m pytest tests`，
+# 本文件当场报 `FileNotFoundError: .../docs/后续待开功能.md`。
+# 更坏的是它长得像「台账对不上」，把人往完全错误的方向引。
+#
+# 现在分两条路，**判据与断言强度一个字节都没改**：
+#   · 文档在   → 原样跑（私有工程走的就是这条路）；
+#   · 文档不在 → **那一条**显式 skip，skip 行里写明为什么不跑。
+# 为什么不整模块 skip（对比 `tests/test_doc_claims.py` 的做法）：本文件**只有这一条**
+# 读该文档，其余各条只读仓库内的 `kiana_vnext_plus/` 与三个入口文件（都在快照里），
+# 整模块跳过会把 10 条能跑的守卫一起废掉 —— 那是**降低守卫强度**。
+# 为什么不在缺文档时删掉 GAP 那几条断言：删断言等于守卫失效，
+# 本工程明文最忌这个（同口径见 `tests/test_silent_failure_scan.py`）。
+# ─────────────────────────────────────────────────────────────
+_HANDOVER_DOC_REL = "docs/后续待开功能.md"
+_HANDOVER_DOC = ROOT / "docs" / "后续待开功能.md"
+
+_MISSING_DOC_REASON = (
+    f"{_HANDOVER_DOC_REL} 不随本仓库发布（内部交接文档，只在私有工程里）；"
+    "该条判据要读它才能核对 GAP 是否登记给人，故跳过 —— 是「没跑」不是「通过」"
+)
 
 # ── 「引擎会读、但入口文件里没有」的键：**逐条给结论** ──────────────
 #    ⚠️ 这不是"免检名单"，而是**已评估台账**。首版我按"组"写了六条概括性理由——
@@ -51,6 +88,9 @@ CATEGORY = {
     "TUNING": "内部调优（改错会伤稳定性，刻意不给界面）",
     "SAFE": "安全默认（刻意常开，给开关=邀请用户把自己暴露出去）",
     "INTERNAL": "由外部流程/文件负责（环境变量、上游注入）",
+    # ⚠️ 下面这条说明里的路径**保持原样不动**：文档在时（私有工程）它指得准；
+    #    文档不在时（公开快照）它只是一句"登记在哪儿"的叙述，不构成断链、
+    #    也不影响任何判据 —— 所以不做条件化文字，避免两棵树里出现两份措辞。
     "GAP": "**真缺口**：用户可能想控但当前无入口（已登记在 docs/后续待开功能.md）",
 }
 
@@ -194,6 +234,16 @@ def _entry_text():
                      for f in ENTRY_FILES if (ROOT / f).exists())
 
 
+def _handover_text():
+    """读交接文档的正文（**唯一的读点**，见 `_HANDOVER_DOC` 处的守卫）。
+
+    调用方必须**先**确认 `_HANDOVER_DOC.exists()` —— 本函数不做兜底，
+    缺文件时照样抛 `FileNotFoundError`：守卫集中在一处，避免"两个地方各判一次、
+    其中一个哪天被删掉"的老毛病。
+    """
+    return _HANDOVER_DOC.read_text(encoding="utf-8")
+
+
 class TestNoDeadConfigKey(unittest.TestCase):
     def test_engine_read_keys_have_an_entry_or_are_registered(self):
         """**本文件的核心**：引擎会读的键，要么有入口，要么在已知清单里"""
@@ -232,12 +282,26 @@ class TestNoDeadConfigKey(unittest.TestCase):
                          f"这些键标成 GAP 但入口文件里已出现，类别应改: {wrong}")
 
     def test_gaps_are_documented_in_handover(self):
-        """GAP 必须写进交接文档——**登记在测试里不算登记给人**"""
-        doc = (ROOT / "docs" / "后续待开功能.md").read_text(encoding="utf-8")
+        """GAP 必须写进交接文档——**登记在测试里不算登记给人**
+
+        [v2.19.9 修复] 交接文档**不随公开快照发布**（见 `_HANDOVER_DOC_REL` 处的守卫）：
+        它不在时**本方法显式 skip**，并在 skip 行里说明原因 —— 是「没跑」不是「通过」。
+        文档在时（私有工程）下面逐字是原来的写法，判据一字未改。
+        """
+        if not _HANDOVER_DOC.exists():
+            if pytest is not None:
+                # 只有这一条读该文档 —— 故按方法跳过，不动本文件其余判据
+                pytest.skip(_MISSING_DOC_REASON)
+            # 没装 pytest 又直接 `python tests/test_config_wiring_audit.py`：
+            # 同一句话打出来再跳过本方法（其余用例照跑）——文档缺失不是测试失败，
+            # 但也绝不静默通过。
+            print(f"SKIP: {_MISSING_DOC_REASON}")
+            return
+        doc = _handover_text()
         missing = sorted(k for k, v in KNOWN_INTERNAL.items()
                          if v == "GAP" and k not in doc)
         self.assertEqual(missing, [],
-                         f"这些真缺口没写进 docs/后续待开功能.md: {missing}")
+                         f"这些真缺口没写进 {_HANDOVER_DOC_REL}: {missing}")
 
 
 class TestReadDetectionCoversAttributeStyle(unittest.TestCase):

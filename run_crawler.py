@@ -77,7 +77,7 @@ def _detect_browser_path() -> str:
         os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
         os.environ.get("PATCHRIGHT_BROWSERS_PATH", ""),
         str(_P(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"),
-        # [FIXED & MODIFIED] F5：硬编码 C:\Users\miku0\... 改为动态拼 LOCALAPPDATA（用户名变化/Hermes 迁移后仍可用）
+        # [FIXED & MODIFIED] F5：硬编码 C:\Users\<用户名>\... 改为动态拼 LOCALAPPDATA（用户名变化/Hermes 迁移后仍可用）
         str(_P(os.environ.get("LOCALAPPDATA", "")) / "Hermes Agent CN Desktop" / "data" / "hermes-home" / "cache" / "ms-playwright"),
     ]
     for p in candidates:
@@ -490,7 +490,7 @@ def main():
     # [v6 接线缺口] 给 CookieArmory 一个**可达入口**。
     # 此前它既无 GUI 开关也无 CLI 参数，引擎侧的键永远是默认 False —— 等于死代码。
     # 这里只加"命令行可达"（不加 GUI 一键开关：这是风险敏感特性，
-    # 是否上首页开关由用户决定，见 docs/后续待开功能.md）。
+    # 是否上首页开关由用户决定，见内部交接文档）。
     ap.add_argument("--cookie-armory", action="store_true",
                     help="启用按站身份弹药库（需已配置 cookies；默认关，风险自负）")
     # [v6 修复·用户实测发现] **身份池没有可达的导入入口**。

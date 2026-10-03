@@ -614,7 +614,7 @@ class CookieLoginBridge:
     —— 引擎桥当年就是为这个才起后台线程的。
 
     **回主线程不用 Signal，用注入的投递函数**（GUI 侧接的正是本文件既有的
-    `QApplication.postEvent`）：CLAUDE.md 陷阱表写着"worker 线程 emit 信号偶发崩"
+    `QApplication.postEvent`）：本工程的开发规范 陷阱表写着"worker 线程 emit 信号偶发崩"
     （v2.18.1 的壁纸 worker 已统一改成 postEvent）。
 
     协程工厂 / 核验函数 / 投递函数**都可注入** —— 于是"线程 + 事件循环 + 核验 + 投递"
@@ -821,7 +821,7 @@ class HomePage(_Page):
         # cookie 现在到底从哪来 —— 不能因为搬走了按钮就让用户以为"这儿没入口 = 没有这功能"。
 
         # [v6 M1-f] 接管已登录浏览器 —— 复用**你自己登录的**浏览器会话，到达登录墙后的内容。
-        # 六跳接线见 CLAUDE.md 第七节；此处是第①跳（控件 create）。
+        # 六跳接线见 本工程的开发规范 第七节；此处是第①跳（控件 create）。
         # 动效：直接用工程现成的 _switch() → SwitchButton（自带滑块过渡动画），
         # 与上面 5 个开关**完全同款**，不自造动画、不引入新视觉风格。
         # 默认关：与 config.DEFAULT_GLOBAL 的 cdp_attach=False 一致。
@@ -2267,7 +2267,7 @@ class KianaV9(FluentWindow):
         现在照本文件既有的两条同款路径（`_refresh_privacy_status_async` /
         `_check_cookie_sources_async`）搬进后台：daemon 线程跑子进程 +
         `_deliver_async`（= `QApplication.postEvent`）回主线程。
-        **不用跨线程 Signal**（CLAUDE.md 陷阱表：worker 线程 emit 信号偶发崩），
+        **不用跨线程 Signal**（本工程的开发规范 陷阱表：worker 线程 emit 信号偶发崩），
         **不用 `asyncio.run()`**（会把事件循环塞进 Qt 主线程）。
 
         **判据一个字没改**：结果仍旧是"从 privacy_scanner 的 stdout 里挑几行 → toast"，
@@ -2531,7 +2531,7 @@ class KianaV9(FluentWindow):
         """后台线程 → 主线程投递（登录那条链**唯一**的通路）。
 
         用 `QApplication.postEvent` 而不是跨线程 Signal：本工程有过"worker 线程 emit
-        信号偶发崩"的记录（CLAUDE.md 陷阱表；v2.18.1 的壁纸 worker 已统一改过来）。
+        信号偶发崩"的记录（本工程的开发规范 陷阱表；v2.18.1 的壁纸 worker 已统一改过来）。
         postEvent 是 Qt 文档明确的线程安全 API，且**不要求接收方还在事件循环里**。
         """
         QApplication.postEvent(self, _LoginEvent(kind, payload))

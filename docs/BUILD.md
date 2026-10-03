@@ -1,7 +1,7 @@
 # 构建与打包文档（BUILD）
 
 > 适用版本：v2.19.9（`VERSION.json` 为权威源）｜ 描述从源码到安装包的完整流程、命令与坑。
-> ⚠️ 本文档曾长期滞后于代码（版本号、PO Token 路径、卸载器行为），v2.19.8 已逐处修正；
+> **注意**：本文档曾长期滞后于代码（版本号、PO Token 路径、卸载器行为），v2.19.8 已逐处修正；
 > 引用具体行为前请以代码为准：`kiana_setup.nsi` / `KianaLauncher.spec` / `一键构建.bat`。
 
 ---
@@ -28,10 +28,12 @@
 | 项目 | 要求 |
 |---|---|
 | Python | **3.11+**（三处口径统一说明见下） |
-| Python 依赖 | `pip install -r kiana_vnext_plus/requirements.txt`（运行时，27 包全 `==` 钉死） |
-| 开发/测试依赖 | `pip install -r requirements-dev.txt`（pytest / ruff / mypy / pyinstaller / pip-audit，v2.19.3 新增） |
+| Python 依赖 | `pip install -r kiana_vnext_plus/requirements.txt`（运行时，**25** 个包全部 `==` 钉死） |
+| 开发/测试依赖 | `pip install -r requirements-dev.txt`（**6** 个包：pytest / pytest-cov / ruff / mypy / pyinstaller / pip-audit，v2.19.3 新增） |
 | PyInstaller | 随 `requirements-dev.txt` 安装（`==6.21.0` 钉死，勿随意升级） |
 | NSIS | 3.x（`C:\Program Files (x86)\NSIS\makensis.exe`） |
+| Chromium | ms-playwright 缓存（`python -m patchright install chromium`）—— 随包分发 |
+| PO Token 组件 | bgutil server（含 `build/main.js`）+ `deno.exe` —— 随包分发，**需环境变量指定路径** |
 
 **Python 版本口径（三处含义不同，不矛盾）**：
 
@@ -41,10 +43,8 @@
 | `pyproject.toml` mypy `python_version` | `3.12` | **类型检查目标**：类型推断按该版本的语义做 |
 | 本机实测 / CI | 3.14 / 3.12 | 开发机跑 3.14、CI runner 跑 3.12，**均通过全部测试** |
 
-> 注：`pytest` / `ruff` / `mypy` / `pyinstaller` 此前不在任何清单里（换机无法复现测试线，评估报告 P2-17），
+> 注：`pytest` / `ruff` / `mypy` / `pyinstaller` 此前不在任何清单里（换机无法复现测试线），
 > v2.19.3 已补入 `requirements-dev.txt`。
-| Chromium | ms-playwright 缓存（`python -m patchright install chromium`）—— 随包分发 |
-| PO Token 组件 | bgutil server（含 `build/main.js`）+ `deno.exe` —— 随包分发，**需环境变量指定路径** |
 
 ### 2.1 PO Token 三件套准备（YouTube 下载必需）
 
@@ -64,7 +64,7 @@
           ← 本机标准位置；「一键构建.bat」会自动设置这两个环境变量指向此处
 ```
 
-> ✅ v2.19 已把组件从 `%TEMP%\bgutil-pot` 迁至上述 vendor 目录（TEMP 会被系统清理，
+> v2.19 已把组件从 `%TEMP%\bgutil-pot` 迁至上述 vendor 目录（TEMP 会被系统清理，
 > 曾导致打包静默丢组件），并让 spec 自动定位 + 缺件时**直接报错中止**。
 > 自用测试构建若确要跳过：设 `KIANA_SKIP_POT=1`。
 
@@ -152,7 +152,7 @@ python tools/release_check.py                 # 必须 14/14 PASS
 #      ③ 是登记安装且无可恢复 → 彻底清理（快捷方式 + 注册表全删）。
 #    但"别用正式安装的 Uninstall.exe 去卸测试副本"这条**依然成立**（它本身就是登记安装，
 #    会走分支③，把正式安装的共享资源删掉）。
-#    ⚠️ 另一半同样要小心（2026-09-18 实测事故）：**测试副本自己的 Uninstall.exe 也会改写
+#    **注意**：另一半同样要小心（2026-09-18 实测事故）：**测试副本自己的 Uninstall.exe 也会改写
 #       正式安装的快捷方式**——它在分支②恢复时，CreateShortCut 的"起始位置"取的是本副本的
 #       临时 $OUTDIR，于是恢复出来的桌面/开始菜单快捷方式 WorkDir 指向随后被删的临时目录。
 #       该缺陷已在 kiana_setup.nsi 修复（恢复分支显式 SetOutPath "$1"）；但用**旧版安装包**
@@ -162,7 +162,9 @@ python tools/release_check.py                 # 必须 14/14 PASS
 #         · 或整个装卸验证放虚拟机/测试账户里做；
 #         · 只想看会执行什么命令：`python tools/installer_matrix.py --dry`
 #           （[v2.19.8] 该开关此前是摆设、传了仍真装真卸，现已真正短路）。
-#        （详见 docs/DEVLOG.md 2026-09-06 与 2026-09-18 事故记录）
+#    背景（自包含记录，原详述文档不在公开快照内）：2026-09-06 的「测试副本卸载器破坏正式安装」
+#    与 2026-09-18 的「测试副本恢复快捷方式时工作目录指向临时目录」两次实测事故，
+#    修复均已落在 kiana_setup.nsi（三分支卸载逻辑 + 恢复分支显式 SetOutPath）。
 #    装 → 验证条目数/PO Token/Chromium → CLI 冒烟 → 卸 → 确认零残留 → 还原快捷方式
 
 # ⑥ 提交与打标
@@ -172,7 +174,7 @@ git tag vX.Y.Z-final
 
 ---
 
-## 六、常见坑（血泪清单）
+## 六、常见坑与对策
 
 | # | 坑 | 对策 |
 |---|---|---|
@@ -182,7 +184,7 @@ git tag vX.Y.Z-final
 | 4 | 双 onedir 合并 `_internal` 时同名 DLL 冲突 | 安装 Section 先 `RMDir /r "$INSTDIR\_internal"`；当前两个包同名文件逐字节一致（实测 0 冲突） |
 | 5 | PyInstaller 升级后依赖版本变动 → 旧 `_internal` 残留混跑 | 同上，升级前清理 |
 | 6 | NSIS 内存映射失败（单个 onefile > ~600MB） | 本项目用 **onedir** 而非 onefile，规避此限制 |
-| 7 | 打包漏 `qfluentwidgets` 资源 → GUI 白屏 | spec 已含 `collect_data_files('qfluentwidgets')`（`KianaLauncher.spec:42`，勿删） |
+| 7 | 打包漏 `qfluentwidgets` 资源 → GUI 白屏 | spec 已含 `collect_data_files('qfluentwidgets')`（`KianaLauncher.spec`，勿删） |
 | 8 | NSIS 脚本必须 UTF-8 BOM | 编辑时保持 BOM，否则中文文案乱码 |
 | 9 | 卸载后残留 `Uninstall.exe` | 已有 cmd 自清理收尾（勿删该段） |
 

@@ -1,6 +1,6 @@
 """v2.19 安全回归：日志脱敏（挂 handler 根治）+ URL 参数表扩容 + HTTP 缓存脱敏
 
-对应 docs/优化计划_v219.md 批次 1.4 / 1.5。
+对应内部优化计划批次 1.4 / 1.5。
 核心背景：Filter 原挂在 root **logger** 上，而 Python logging 只调用祖先的
 **handler**、不调用祖先 logger 的 filter → 子 logger 记录完全未脱敏。
 全部离线。
