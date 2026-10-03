@@ -16,7 +16,7 @@ if ENGINE.exists():
 
 # [v6] 内置第三方部件（`vendor/`）—— **插在最前面**，让 `import camoufox` / `import ddddocr`
 # 优先取**随工程打包的副本**，而不是 site-packages 里那份。
-# 为什么放进工程：机主要求"打包也打进去"，换机器/装完即用，不依赖用户自己 pip。
+# 为什么放进工程：用户要求"打包也打进去"，换机器/装完即用，不依赖用户自己 pip。
 # 为什么源码不入 git：见 `vendor/README.md`（它们是上游项目，混进仓库既踩许可边界，
 # 也让"这仓库到底是谁的代码"说不清）。**依赖用、源码不推。**
 _VENDOR = ENGINE / "vendor"
@@ -27,7 +27,7 @@ if _VENDOR.is_dir():
 
 # [FIXED & MODIFIED] v2.6.8 强制 UTF-8 locale（安装版独立进程默认 gbk → yt-dlp 调 ffmpeg 合并时
 # subprocess 读 ffmpeg 输出（B站 dash 流 metadata 含 UTF-8 中文）→ gbk 解码崩溃 → 合并失败 →
-# 分离流被清理 → 机主"空文件夹"根因。Windows 不支持 C.UTF-8，用 en_US.UTF-8（已验证 setlocale 成功）。
+# 分离流被清理 → 用户"空文件夹"根因。Windows 不支持 C.UTF-8，用 en_US.UTF-8（已验证 setlocale 成功）。
 import locale as _locale
 try:
     _locale.setlocale(_locale.LC_CTYPE, 'en_US.UTF-8')
@@ -381,7 +381,7 @@ def _armory_cli(args) -> int:
     """身份池的「存 / 查 / 删」—— 与 GUI 的「导入身份…」「查看身份」是**同一份实现**
     （都走 `CookieArmory` + `armory_db_path()` 唯一路径）。
 
-    [v6 修复·机主实测发现] 加这个是因为：功能建好了、开关也有了，
+    [v6 修复·用户实测发现] 加这个是因为：功能建好了、开关也有了，
     但**使用者没有任何地方能往里存东西** —— 比静默失效更糟，
     因为它明说了"库里没有身份"却不给补的办法。
 
@@ -490,11 +490,11 @@ def main():
     # [v6 接线缺口] 给 CookieArmory 一个**可达入口**。
     # 此前它既无 GUI 开关也无 CLI 参数，引擎侧的键永远是默认 False —— 等于死代码。
     # 这里只加"命令行可达"（不加 GUI 一键开关：这是风险敏感特性，
-    # 是否上首页开关由机主决定，见 docs/后续待开功能.md）。
+    # 是否上首页开关由用户决定，见 docs/后续待开功能.md）。
     ap.add_argument("--cookie-armory", action="store_true",
                     help="启用按站身份弹药库（需已配置 cookies；默认关，风险自负）")
-    # [v6 修复·机主实测发现] **身份池没有可达的导入入口**。
-    # `kiana_vnext_plus.cli cookie-add` 那套逻辑一直存在，但机主用的入口是
+    # [v6 修复·用户实测发现] **身份池没有可达的导入入口**。
+    # `kiana_vnext_plus.cli cookie-add` 那套逻辑一直存在，但用户用的入口是
     # `run_crawler.py` 与 GUI —— 两边都**没有导入**：
     #   · GUI：我加了开关与状态行，却漏了导入（状态行会说"库里没有身份"，
     #          但界面里没有任何地方能加）；
@@ -557,7 +557,7 @@ def main():
     # [v2.17 B4b] 证据驱动动态优先级（默认关）
     if args.dynamic_priority:
         cfg["dynamic_priority"] = True
-    # [v2.19.8 修复·机主发现的漂移] 原为 `if args.page_timeout > 0`：帮助文本承诺"0=关闭"，
+    # [v2.19.8 修复·用户发现的漂移] 原为 `if args.page_timeout > 0`：帮助文本承诺"0=关闭"，
     # 但显式传 0 时键根本没进 cfg（argparse 默认也是 0，两者不可区分）→ 引擎读到的是
     # DEFAULT_GLOBAL 的 300s，**看门狗关不掉**（声明与行为不符）。
     # 现：argparse 默认改 None（=未指定，沿用配置默认），显式传值（含 0）一律透传。

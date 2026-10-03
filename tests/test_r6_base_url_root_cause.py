@@ -136,7 +136,7 @@ class TestHttpCacheKeepsFinalUrl(unittest.TestCase):
 class TestStaleCacheEntriesSelfHeal(unittest.TestCase):
     """**修复前写入的旧条目必须自愈**，否则会继续污染到 TTL 过期为止
 
-    机主机器上实测有 **169 个**修复前的条目（写盘时 `final_url` 被丢弃）。
+    用户机器上实测有 **169 个**修复前的条目（写盘时 `final_url` 被丢弃）。
     只修写入端的话，它们仍会让短链种子的基址退回 `b23.tv`。
 
     判据**刻意收窄**：只有"**请求地址本身是短链**且缺 `final_url`"才算未命中 ——

@@ -5,7 +5,7 @@
   "但**新增**一个没人调用的函数应当被看见——要么接线，要么登记。",
   "只查「引擎内零引用」；框架回调（do_POST 等）已豁免。",
   "**只许降不许升**：接上或删掉一个就更新基线让它变小。",
-  "[v2.19.9] `local_storage_of` 登记理由：它是 storage_state 里 localStorage 的访问器，专读 B站 的 `ac_time_value`（= refresh_token，手动导出的 cookies.txt 里根本没有它）。机主尚未决定做不做 B站 续期（那个接口有法律风险），所以现在**没有调用点**；删了将来要用又得重写 ⇒ **登记而非删除**。"
+  "[v2.19.9] `local_storage_of` 登记理由：它是 storage_state 里 localStorage 的访问器，专读 B站 的 `ac_time_value`（= refresh_token，手动导出的 cookies.txt 里根本没有它）。用户尚未决定做不做 B站 续期（那个接口有法律风险），所以现在**没有调用点**；删了将来要用又得重写 ⇒ **登记而非删除**。"
  ],
  "dead_functions": {
   "clean_html": {

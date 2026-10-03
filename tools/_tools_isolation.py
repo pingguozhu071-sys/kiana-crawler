@@ -4,7 +4,7 @@
 ## 为什么需要它（真事故，不是防御性编程）
 
 `tests/conftest.py` 那套 autouse 护栏**只在 pytest 里生效**。`tools/` 下的脚本是
-`python tools/xxx.py` 直接执行的，护栏根本不在场，于是它们会真的动机主的数据：
+`python tools/xxx.py` 直接执行的，护栏根本不在场，于是它们会真的动用户的数据：
 
   · **`KianaV9()` 构造期**就有写路径 —— `launcher_v9.py` 的启动迁移钩子见到
     `launcher_config.json` 里还有明文密钥，会写 `secrets/*.bin` 并**改写真配置**；
@@ -19,7 +19,7 @@
   · `kiana_vnext_plus.config.data_root()` —— **调用期**求值。
 
 ⚠️ 因此 `activate()` **必须写在脚本最顶上、任何 launcher 导入之前**：
-导入之后再改环境变量，`CONFIG_FILE` 早就固化到机主真路径上了。
+导入之后再改环境变量，`CONFIG_FILE` 早就固化到用户真路径上了。
 （`KIANA_PORTABLE=1` 不够用：它只影响 `data_root()`，管不到 `CONFIG_FILE`；
 而且非冻结时它把数据根指到**仓库里**的 `KianaData/`，那是污染仓库，不是隔离。
 `KIANA_DATA_ROOT` 这个变量在全仓**根本不存在**，别以为有。）
@@ -29,7 +29,7 @@
     from _tools_isolation import activate, add_real_flag
     ISOLATED_ROOT = activate()          # ← 必须在 import launcher_* 之前
 
-要**真的**对机主数据根跑（真机冒烟），显式加 `--real`，或在环境里设
+要**真的**对用户数据根跑（真机冒烟），显式加 `--real`，或在环境里设
 `KIANA_TOOLS_REAL=1`。那时本模块**原样不动**任何环境变量，只打印一条风险提示。
 
 ## 副作用与取舍（写清楚，别让下一个人以为是白捡的）
@@ -65,7 +65,7 @@ _activated_root = None
 
 
 def want_real(argv=None) -> bool:
-    """要不要对**机主真实数据根**跑。默认 False（= 隔离）。"""
+    """要不要对**用户真实数据根**跑。默认 False（= 隔离）。"""
     args = list(sys.argv[1:] if argv is None else argv)
     if REAL_FLAG in args:
         return True
@@ -88,10 +88,10 @@ def add_real_flag(ap) -> None:
         REAL_FLAG, action="store_true",
         # ⚠️ argparse 的 help 文本会做 `%` 插值，裸写 %LOCALAPPDATA% 会抛
         # "badly formed help string"。所以这里必须写成 %%LOCALAPPDATA%%。
-        help="⚠️ 危险：对**机主真实数据根**运行（真读真写 "
+        help="⚠️ 危险：对**用户真实数据根**运行（真读真写 "
              "%%LOCALAPPDATA%%\\KianaVnextPlus：launcher_config.json、secrets/、"
              "http_cache/、profiles/、cookies.txt）。默认是**隔离模式**"
-             "（临时数据根，跑完即删，不碰机主任何数据）。"
+             "（临时数据根，跑完即删，不碰用户任何数据）。"
              "只有明确要对真机做冒烟/回归时才加这个开关。")
 
 
@@ -118,7 +118,7 @@ def activate(script: str, *, argv=None) -> "pathlib.Path | None":
     global _activated_root
 
     if want_real(argv):
-        print(f"[{script}] ⚠️ --real：本次将**直接使用机主真实数据根** "
+        print(f"[{script}] ⚠️ --real：本次将**直接使用用户真实数据根** "
               f"{os.environ.get('LOCALAPPDATA', '')}\\KianaVnextPlus"
               f"（会读写 launcher_config.json / secrets/ / http_cache/ / profiles/）。"
               f"去掉 --real 即为隔离模式。", file=sys.stderr)
@@ -145,10 +145,10 @@ def activate(script: str, *, argv=None) -> "pathlib.Path | None":
     local = root / "LocalAppData"
     (local / "KianaVnextPlus").mkdir(parents=True, exist_ok=True)
     os.environ["LOCALAPPDATA"] = str(local)
-    # 明确**不要**继承机主的 KIANA_PORTABLE：非冻结时它把数据根指到仓库里的
+    # 明确**不要**继承用户的 KIANA_PORTABLE：非冻结时它把数据根指到仓库里的
     # KianaData/，那是污染仓库而不是隔离。这里必须清掉。
     os.environ.pop("KIANA_PORTABLE", None)
-    # cookies 来源同理：不继承，免得脚本悄悄拿机主真登录态去真爬
+    # cookies 来源同理：不继承，免得脚本悄悄拿用户真登录态去真爬
     os.environ.pop("KIANA_COOKIE_FILES", None)
     os.environ.pop("KIANA_COOKIE_FILE", None)
 
@@ -162,7 +162,7 @@ def activate(script: str, *, argv=None) -> "pathlib.Path | None":
 
     print(f"[{script}] 🔒 隔离模式：数据根已重定向到 {root}\\LocalAppData\\KianaVnextPlus "
           f"{keep_note}\n"
-          f"          机主的真实数据根**一个字节都不会动**。"
+          f"          用户的真实数据根**一个字节都不会动**。"
           f"要真的对真机跑，加 --real（见 --help，有风险说明）。"
           + ("\n          已保留浏览器路径：" + "; ".join(preserved) if preserved else ""),
           file=sys.stderr)

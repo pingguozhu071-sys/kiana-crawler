@@ -133,7 +133,7 @@ class TestMigrationV5AndThrottle(unittest.TestCase):
     def test_old_v4_db_migrates_without_data_loss(self):
         """[v2.19.3 质检] 老库（v4，无 throttle_count）升级必须**保留全部数据**且**幂等**。
 
-        机主已装旧版，升级安装后会跑此迁移——丢数据不可接受。"""
+        用户已装旧版，升级安装后会跑此迁移——丢数据不可接受。"""
         import sqlite3 as _sq
         import importlib
         import kiana_vnext_plus.frontier as fm

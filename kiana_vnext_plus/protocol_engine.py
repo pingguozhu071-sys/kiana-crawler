@@ -92,11 +92,11 @@ class ProtocolEngine:
     async def init(self):
         """初始化所有 TLS 指纹版本的客户端连接池。
 
-        [v6 修复·机主明确要求「反爬要看得见的日志、输出用中文」]
+        [v6 修复·用户明确要求「反爬要看得见的日志、输出用中文」]
         原来这里每个版本打一条**英文** INFO：
             `ProtocolEngine: initialized TLS pool for chrome136`
         问题有两个：
-          · **英文** —— 机主看日志要能直接读懂；
+          · **英文** —— 用户看日志要能直接读懂；
           · **逐版本刷 5 行**但不说明"这意味着什么"——
             用户看不出这是"反爬已就绪"还是"只是建了几个对象"。
         现改成：**逐版本一行（中文）** + **末尾一句总结**，
@@ -131,7 +131,7 @@ class ProtocolEngine:
                     logger.error(f"反爬异常：默认 TLS 指纹 {self.default_impersonate} "
                                  f"建立失败 —— {e}")
 
-            # [v6] **末尾一句总结** —— 机主要的是"看得见反爬在生效"，
+            # [v6] **末尾一句总结** —— 用户要的是"看得见反爬在生效"，
             # 逐版本那 5 行说明不了这件事（用户看不出是就绪还是只是建了对象）。
             # ⚠️ **只在首次初始化时打**：`init()` 可能被调多次（现在 `crawler` 调一次，
             # 将来别处也可能调），每次打就成了刷屏 —— 实测第二次调用会重复输出。
@@ -244,7 +244,7 @@ class ProtocolEngine:
         for attempt in range(self.max_retries + 1):
             try:
                 # 指数退避等待（非首次尝试）——[FIXED & MODIFIED] v2.10.6 D4 上限 8s（原 2+4+8+rand≈9s/页，
-                # 一批 10 页全挂卡 90s；机主激进风格收敛到 8s 内）
+                # 一批 10 页全挂卡 90s；用户激进风格收敛到 8s 内）
                 if attempt > 0:
                     backoff = min(self.retry_backoff_base * (2 ** attempt), 8.0) + random.uniform(0, 1)
                     logger.debug(f"Retry {attempt}/{self.max_retries} for {url}, waiting {backoff:.1f}s")
@@ -252,7 +252,7 @@ class ProtocolEngine:
 
                 # 使用 curl_cffi
                 client, tls_version = self._get_client_for_proxy(proxy)
-                # [v6 修复·机主要求「反爬要看得见的日志」] 每次请求说清**用的哪个指纹**，
+                # [v6 修复·用户要求「反爬要看得见的日志」] 每次请求说清**用的哪个指纹**，
                 # 但**按版本只报一次** —— 一次抓取几百个请求，逐条打会淹掉日志。
                 # 这样用户既看得到"反爬在生效"，又不会被刷屏。
                 if client is not None and not getattr(self, "_stealth_used", None):

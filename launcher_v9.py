@@ -812,7 +812,7 @@ class HomePage(_Page):
         self.cookie_status = BodyLabel("")
         self.lay.addWidget(self.cookie_status)
 
-        # ── [v7 重排] 「登录取 cookies」那一整行**已挪到设置页**（机主要求：主页面别堆 UI）──
+        # ── [v7 重排] 「登录取 cookies」那一整行**已挪到设置页**（用户要求：主页面别堆 UI）──
         # 首页**只留这一行输入框**：它是每次抓取都要看一眼/对一下的东西
         # （"这一趟到底带没带登录态"），留在首页是有用的；而登录/管理属于
         # "配一次就完事"的动作，正在设置页的「Cookies 管理」里。
@@ -843,7 +843,7 @@ class HomePage(_Page):
         self.cdp_status = BodyLabel("")
         self.lay.addWidget(self.cdp_status)
 
-        # ── [v6 P1] 按站身份池（机主点名"必须得要"）──────────────────────────
+        # ── [v6 P1] 按站身份池（用户点名"必须得要"）──────────────────────────
         # 与上一条「接管已登录浏览器」**并列**，两者互补：
         #   · 接管浏览器：用**你自己那个浏览器**的登录态（一个身份）
         #   · 身份池    ：用**按站入库的 cookies**，可多账号轮换、带健康分/额度/冷却
@@ -854,7 +854,7 @@ class HomePage(_Page):
         arow.setSpacing(8)
         self.sw_armory = self._switch("按站身份池", arow,
                                       bool(cfg.get("cookie_armory_enabled", False)))
-        # [v6 修复·机主实测发现] **导入入口**。
+        # [v6 修复·用户实测发现] **导入入口**。
         # 原来只有开关没有入口：状态行会诚实地说"库里没有任何身份"，
         # 但**界面里没有任何地方能加** —— 于是这个功能对使用者等于不存在
         # （比"静默失效"更糟：它明说了缺什么，却不给补的办法）。
@@ -896,7 +896,7 @@ class HomePage(_Page):
         #   · 显示浏览器窗口 ←→ `headless`（**反向**：勾上=有头，headless=False）
         #     无头是默认（省内存、不弹窗）；要看渲染过程/手动过验证码时才需要打开。
         #   · 导出 Markdown ←→ `export_markdown`（每页留一份 Markdown 快照）
-        # [v6 修复·机主实测反馈] 机主把它勾上后**一次窗口都没弹**，以为坏了。
+        # [v6 修复·用户实测反馈] 用户把它勾上后**一次窗口都没弹**，以为坏了。
         # 查证：浏览器是**回退层**，只有协议层拿不到页面时才启动；
         # v6 修完 `_needs_solver` 误报后 B站走纯协议层 ⇒ **根本不产生窗口**。
         # **不是坏了，是文案没写清条件。** 改名 + 挂 tooltip。
@@ -983,7 +983,7 @@ class HomePage(_Page):
     def _switch(self, text, lay, checked, tip=""):
         """一个「文字 + 开关」的行。`tip` 会挂成**行级 tooltip**。
 
-        [v6 修复·界面文案撒谎] 机主实测：把「显示浏览器窗口」勾上，
+        [v6 修复·界面文案撒谎] 用户实测：把「显示浏览器窗口」勾上，
         **一次窗口都没弹**，以为是坏了。查证后是**文案没写清条件**：
         浏览器是**回退层**，只有协议层拿不到页面（403/渲染站/过验证码）时才启动；
         纯协议抓取（B 站现在就是）根本不产生窗口。
@@ -1175,7 +1175,7 @@ class SettingsPage(_Page):
         self.lay.addWidget(card)
 
         # ── [v7] 「Cookies 管理」卡：管理**多个** cookies 来源 + 登录也在这里 ──────
-        # 机主原话："你现在无法同时管理多个 cookies 啊，然后主页面还堆了一堆 UI 其实挺乱的"
+        # 用户原话："你现在无法同时管理多个 cookies 啊，然后主页面还堆了一堆 UI 其实挺乱的"
         # ⇒ ① 登录从首页搬到这里；② 列出**当前真正生效的每一个来源**（含"从哪来"）。
         #
         # 为什么"列出真实来源"是这张卡的核心：引擎一直就支持多份 cookies
@@ -1458,7 +1458,7 @@ class SettingsPage(_Page):
         rowp.addWidget(self.wp_pick_img); rowp.addWidget(self.wp_pick_dir); rowp.addStretch(1)
         v3.addLayout(rowp)
 
-        # [v2.18.2 机主新要求] 面板玻璃透明度：滑杆 40-95 + 预设组，即调即生效。
+        # [v2.18.2 用户新要求] 面板玻璃透明度：滑杆 40-95 + 预设组，即调即生效。
         # 独立 QTimer 防抖（不用 _wp_debounce——它属于底图系统，会连带重渲染整张底图）
         rowg = QHBoxLayout()
         rowg.addWidget(BodyLabel("面板玻璃"))
@@ -1629,7 +1629,7 @@ def _priv_scan_unavailable_reason() -> str:
     rules/sites / ddddocr / qfluentwidgets / browsers / pot_server），
     而冻结后 `sys.executable` 指向 **GUI 自己**。于是"用解释器跑脚本"这行在打包版里变成
     `KianaLauncher.exe <一个不存在的路径>` —— 那个 exe **不看 argv**
-    （`main()` 是 `QApplication(sys.argv)`），后果是**当着机主的面再弹一个 Kiana 窗口**，
+    （`main()` 是 `QApplication(sys.argv)`），后果是**当着用户的面再弹一个 Kiana 窗口**，
     而父进程还要 `capture_output` 等它 30 秒才超时杀掉它。
     本工程的纪律是"不许在前台冒弹窗"，所以这里**如实拒绝**，不静默、也不弹窗。
     """
@@ -1661,7 +1661,7 @@ class KianaV9(FluentWindow):
         except Exception:
             pass
         # [v2.19.9 安全] LLM Key 走**同一套**迁移时机与机制。为什么启动时就迁移、而不是
-        # 等用户下次点「保存 LLM 设置」：机主的真实密钥此刻正明文躺在 launcher_config.json
+        # 等用户下次点「保存 LLM 设置」：用户的真实密钥此刻正明文躺在 launcher_config.json
         # 里，"等他再点一次保存"等于让它继续明文躺着（打码密钥那条也是这么改的）。
         # 迁移只在**加密成功**后才会把明文键从内存字典里抹掉，再落盘。
         try:
@@ -1823,7 +1823,7 @@ class KianaV9(FluentWindow):
     # 自 v2.16 起它就是这样，所以删掉它 **0 用户可见损失**。
     #
     # 为什么不改成"按需触发的环境自检按钮"：那是**加一个新交互**（新控件 + 新接线 +
-    # 新测试面），而机主这一轮要的是"删掉那行小字"。四项里两项（打码密钥 → 设置页
+    # 新测试面），而用户这一轮要的是"删掉那行小字"。四项里两项（打码密钥 → 设置页
     # 「打码 API 密钥」卡；代理 → 设置页代理状态卡）本来就有显示位，另两项
     # （浏览器渲染 / YT 组件）属于**可移植性/装机**检查，`tools/release_check.py`
     # 与安装流程已经覆盖 —— 真要做成 GUI 按钮，应当作为独立任务点名来做，
@@ -2259,7 +2259,7 @@ class KianaV9(FluentWindow):
         """[v2.16 M5] 隐私扫描：调 tools/privacy_scanner 全项检查 → 结果 toast。
 
         **[v2.19.9 修复·主线程假死最长 30 秒]** 原实现是在**本槽里同步**
-        `subprocess.run(..., timeout=30)` —— 子进程要读 %TEMP%、扫机主配置、抽查日志，
+        `subprocess.run(..., timeout=30)` —— 子进程要读 %TEMP%、扫用户配置、抽查日志，
         最坏 30 秒里 Qt 事件循环**完全不转**：窗口一片白、点什么都没反应。
         这与上一轮修掉的 `_start()`（最长 10 秒）是同一类，只是更久，而且
         超时上限本身也更大（30s vs 10s）。
@@ -2367,7 +2367,7 @@ class KianaV9(FluentWindow):
         setThemeColor(QColor(ACCENTS.get(self.accent_name, ACCENTS["蓝"])))
         # [v2.18.2] 根因B修复：原硬编码 rgba(22,27,34,235)（≈92% 不透明纯色块）
         # 视觉是"一块黑板盖在壁纸上"。改为渐变玻璃 + 描边，透明度由配置
-        # panel_alpha（40-95，默认 65）控制——机主可再经设置页滑杆/预设调整。
+        # panel_alpha（40-95，默认 65）控制——用户可再经设置页滑杆/预设调整。
         panel = self._panel_qss(self.config.get("panel_alpha", 65), self.theme == "light")
         try:
             for page in (self.logp, self.datap, self.taskp, self.settings):
@@ -2396,7 +2396,7 @@ class KianaV9(FluentWindow):
         self._apply_qfluent_theme()
         save_config(self.config)
 
-    # [v2.18.2 机主新要求] 面板玻璃透明度：滑杆拖动只更新数值 label + 写内存配置
+    # [v2.18.2 用户新要求] 面板玻璃透明度：滑杆拖动只更新数值 label + 写内存配置
     # （valueChanged 由设置页接线到这个槽）；200ms 防抖后再存盘 + 重刷玻璃。
     # 独立 QTimer——不复用 _wp_debounce（它属于底图系统，会触发整张底图重渲染）。
     def _panel_alpha_changed(self, value, slider):

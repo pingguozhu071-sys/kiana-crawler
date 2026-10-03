@@ -27,7 +27,7 @@ import shutil
 import urllib.request
 from pathlib import Path
 
-# [v6 修复·推仓库前清理] 原来这里把**机主本机的绝对路径**当默认值：
+# [v6 修复·推仓库前清理] 原来这里把**用户本机的绝对路径**当默认值：
 #     SRC  = ... else r"C:\Users\miku0\AppData\Local\Temp\kiana-wx3"
 #     DEST = ... else r"C:\Users\miku0\Desktop\Kiana爬取成果-公众号"
 # 推到别人的仓库里，这两行会指向**别人机器上不存在的目录**，

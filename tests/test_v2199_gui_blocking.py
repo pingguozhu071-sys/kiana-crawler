@@ -4,7 +4,7 @@
 ## 为什么单独一个文件
 
 `_run_priv_scan()` 原来在**槽函数里同步** `subprocess.run(timeout=30)`：
-子进程要读 %TEMP%、扫机主配置、抽查日志 —— 最坏 30 秒里 Qt 事件循环**完全不转**，
+子进程要读 %TEMP%、扫用户配置、抽查日志 —— 最坏 30 秒里 Qt 事件循环**完全不转**，
 窗口一片白、点什么都没反应。这与上一轮修掉的 `_start()`（最长 10 秒）是同一类，
 只是更久；上一轮为 `_refresh_privacy_status_async` / `_check_cookie_sources_async`
 立的那套模式（daemon 线程 + 自己的事件循环 + `QApplication.postEvent` 回主线程）
@@ -145,7 +145,7 @@ class TestPrivScanGuardIsPureLogic:
         `subprocess.run([sys.executable, <脚本>])` 会：
           ① 找不到脚本（子进程白跑一趟），② 更糟 —— 那个 exe **不看 argv**，
              直接又起一个完整 GUI（`main()` 里是 `QApplication(sys.argv)`）。
-        在"不许弹窗"的纪律下，正确做法是**如实拒绝**，而不是把窗口弹到机主脸上。
+        在"不许弹窗"的纪律下，正确做法是**如实拒绝**，而不是把窗口弹到用户脸上。
         """
         gui = self._gui()
         monkeypatch.setattr(gui.sys, "frozen", True, raising=False)
@@ -237,7 +237,7 @@ class TestPrivScanOffscreen:
     def win(self, tmp_path, monkeypatch):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         # 数据根挪到 tmp：离屏构造会读 launcher_config / cookies 来源，
-        # 不许碰到机主真实的 %LOCALAPPDATA%\KianaVnextPlus
+        # 不许碰到用户真实的 %LOCALAPPDATA%\KianaVnextPlus
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         monkeypatch.delenv("KIANA_COOKIE_FILES", raising=False)
         monkeypatch.delenv("KIANA_COOKIE_FILE", raising=False)
@@ -246,7 +246,7 @@ class TestPrivScanOffscreen:
         except Exception as e:                              # pragma: no cover
             pytest.skip(f"PySide6 不可用：{e}")
         # ⚠️ 必须在构造**之前**把路径钉住：`launcher_v8.CONFIG_FILE` 是导入期常量，
-        # `setenv("LOCALAPPDATA", …)` 对它无效 → 任何 save_config 都会写机主真配置。
+        # `setenv("LOCALAPPDATA", …)` 对它无效 → 任何 save_config 都会写用户真配置。
         # （理由详见 tests/conftest.py 的 autouse 护栏与 test_cookie_login_gui.py。）
         fake_cfg = tmp_path / "launcher_config.json"
         for _mod in (sys.modules.get("launcher_v8"), gui):

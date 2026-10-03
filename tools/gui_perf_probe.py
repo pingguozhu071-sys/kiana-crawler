@@ -5,7 +5,7 @@
 用法: python tools/gui_perf_probe.py [--real]
 
 [v2.19.9] 加**默认隔离**：`_phase_wallpaper()` 里那句 `win._wp_update("wp_blur", 6)`
-会一路走到 `launcher_v9.save_config()` → **写机主真实的 launcher_config.json**。
+会一路走到 `launcher_v9.save_config()` → **写用户真实的 launcher_config.json**。
 本脚本原先没有任何隔离（离屏只是"不弹窗"，不是"不写盘"）。
 现在默认把数据根重定向到临时目录，跑完即删；要对真机跑请显式加 `--real`。
 """
@@ -113,7 +113,7 @@ def main():
     def _finish():
         report["max_eventloop_stall_ms"] = round(stall["max"])
         report["stall_where"] = stall["where"]
-        # 判定只看稳态：page_warmup/startup 是首启构建成本（机主已认可），不计卡顿
+        # 判定只看稳态：page_warmup/startup 是首启构建成本（用户已认可），不计卡顿
         report["steady_stall_ms"] = round(stall["steady_max"])
         report["steady_stall_where"] = stall["steady_where"]
         ok = stall["steady_max"] < 200

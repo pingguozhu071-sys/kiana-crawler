@@ -241,7 +241,7 @@ class PageProcessor:
 
         [实测 v2.19.8 短链 bug] `final_url` 传进渲染后的**第二次解析**：渲染拿到的
         就是短链 302 之后的真实页面，若仍按短链主机解析，等于把刚修好的出链又拼回
-        那个不存在的地址（机主日志里"渲染兜底"与 19 页失败同时出现正是这条路径）。"""
+        那个不存在的地址（用户日志里"渲染兜底"与 19 页失败同时出现正是这条路径）。"""
         _rk = getattr(self, '_render_success_count', 0)
         _rb = _render_budget_cfg(getattr(self.crawler, 'cfg', None))
         if not (_placeholder_trigger(data, url, html_sanitized)
@@ -596,7 +596,7 @@ class PageProcessor:
 
             # [v6 修复·真机实测发现] 下面两处「达到页数上限」**不是失败**，
             # 但原来记成 `_update_progress('failed')` → 进度条报 `fail=19`
-            # （实测把机主和排查者都吓到：日志里一条错误都没有，却显示 19 个失败）。
+            # （实测把用户和排查者都吓到：日志里一条错误都没有，却显示 19 个失败）。
             # 上限是**使用者自己配的**、任务是**主动跳过**的 —— 记成 `skipped`。
             # ⚠️ frontier 那边**仍必须** `mark_failed(..., retry=False)`：
             # 主循环的退出条件是「pending + retry == 0」，

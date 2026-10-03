@@ -8,8 +8,8 @@
 保留原因：仅作 v8 壳的历史对照。改 GUI 时请勿参考本文件。
 
 [v2.19.9] 另加**默认隔离**：它 import 的是 `launcher_v8` 并构造 `KianaV8()` ——
-当前那条交互路径不写配置，但 `launcher_v8.CONFIG_FILE` 一样指向机主真配置，
-一旦界面路径有变就是"跑一次冒烟改一次机主配置"。默认重定向数据根，`--real` 可关。
+当前那条交互路径不写配置，但 `launcher_v8.CONFIG_FILE` 一样指向用户真配置，
+一旦界面路径有变就是"跑一次冒烟改一次用户配置"。默认重定向数据根，`--real` 可关。
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

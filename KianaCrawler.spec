@@ -8,7 +8,7 @@ from PyInstaller.utils.hooks import collect_submodules
 # [FIXED & MODIFIED] v2.14 阶段4 供应链：动态解析路径（原硬编码 miku0 用户名+
 # Python314 绝对路径——换机构建必炸；与 KianaLauncher.spec 同款修复）
 def _find_ddddocr_dir():
-    # [v6] **优先工程内的 vendor 副本**（机主要求"打包也打进去"），
+    # [v6] **优先工程内的 vendor 副本**（用户要求"打包也打进去"），
     # 没有才退回 site-packages。否则 spec 会把 site-packages 那份打进包，
     # 而运行时又从 vendor 导入 → 两份可能版本不一致。
     _v = _P(SPECPATH) / "vendor" / "ddddocr"
@@ -44,7 +44,7 @@ datas += collect_data_files('trafilatura')
 hiddenimports += collect_submodules('kiana_vnext_plus')
 
 # ── [v6] 内置第三方部件（`vendor/`）：camoufox 隐身内核 + ddddocr 验证码 ──────────
-# 机主要求"打包也打进去"——装完即用，不依赖用户自己 pip。
+# 用户要求"打包也打进去"——装完即用，不依赖用户自己 pip。
 # ⚠️ 源码**不入 git**（见 `vendor/README.md`）；但**要打进 exe**——两者不冲突。
 # `SPECPATH` 是 PyInstaller 注入的全局（spec 所在目录）。
 _SPEC_DIR = _P(SPECPATH)

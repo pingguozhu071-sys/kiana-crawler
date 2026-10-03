@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """R4：URL 里的 HTML 实体 / 编码残渣必须清掉 —— **否则同一个视频会被当成两个键**
 
-## 真机证据（机主 2026-10-03 GUI 抓取）
+## 真机证据（用户 2026-10-03 GUI 抓取）
 
 ```
 B站视频入队: https://www.bilibili.com/video/BV1PSL96YEwp?amp%3Btrackid=we

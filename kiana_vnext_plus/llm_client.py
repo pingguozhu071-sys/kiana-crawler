@@ -173,7 +173,7 @@ class LLMClient:
         return AsyncSession(timeout=self.timeout_s)
 
     async def _request(self, url, headers, body, method="POST"):
-        # [v2.19.7 安全·扫描发现·**刻意不加 SSRF 闸**] url 是**机主自己在设置页填的**
+        # [v2.19.7 安全·扫描发现·**刻意不加 SSRF 闸**] url 是**用户自己在设置页填的**
         # LLM 端点（llm_api_base），且都是硬编码模板 + 用户 base_url 拼接。若在这里套
         # is_private_url，本地推理服务（http://localhost:11434 / http://127.0.0.1:1234
         # 的 Ollama、LM Studio 等）会被一律拦死——那是明确支持的用法。这不是"可被页面

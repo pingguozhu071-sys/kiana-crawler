@@ -36,22 +36,22 @@ def tmp_frontier(tmp_path):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# [v2.19.9] 数据隔离护栏：跑测试**一个字节**都不许写进机主的真实数据根
+# [v2.19.9] 数据隔离护栏：跑测试**一个字节**都不许写进用户的真实数据根
 #
-# 真实事故（不是假设）：`tests/test_cookie_sources_manager.py` 被执行时，把机主真实的
+# 真实事故（不是假设）：`tests/test_cookie_sources_manager.py` 被执行时，把用户真实的
 #   %LOCALAPPDATA%\KianaVnextPlus\launcher_config.json
-# 里的 `cookie_file` 抹成了 `""` —— 那是机主刚登录好的 B站 cookies 路径。
+# 里的 `cookie_file` 抹成了 `""` —— 那是用户刚登录好的 B站 cookies 路径。
 #
 # 根因：`launcher_v8.py:45  CONFIG_FILE = _launcher_config_path()` 是**导入期**求值的
 # 模块常量。测试里那句 `monkeypatch.setenv("LOCALAPPDATA", tmp_path)` 只影响"之后现算
 # 路径"的代码（`data_root()` 就是现算的，所以它有效），**对导入期常量无效** ——
-# `save_config()` 于是每次都写向机主的真配置。
+# `save_config()` 于是每次都写向用户的真配置。
 #
 # 只把这个测试修好没有意义：下一个人写新测试照样会踩。所以这里做**两层**，
 # 让"默认安全"取代"记得打桩"：
 #   ① 预防（运行在每个测试之前，测试作者什么都不用写）：
 #      把 `launcher_v8` / `launcher_v9` 的 `CONFIG_FILE` 强行指到本测试的 tmp_path。
-#   ② 兜底（运行在每个测试之后）：机主真实数据根下那批**不可再生**的文件
+#   ② 兜底（运行在每个测试之后）：用户真实数据根下那批**不可再生**的文件
 #      （配置 / cookies / 登录态 / 密钥 / 身份池）前后各取一次指纹，
 #      变了就**大声失败**并指名道姓是哪个测试干的。
 #
@@ -60,8 +60,8 @@ def tmp_frontier(tmp_path):
 # 没有 ②，下一个新写法又会是一次静默的数据损坏 —— 而静默正是这次事故最坏的部分。
 # ══════════════════════════════════════════════════════════════════════
 
-# 用 **conftest 导入时** 的环境算机主真实数据根，并固化成常量：
-# 这样即使某个测试 monkeypatch 了 LOCALAPPDATA，这里仍然指向机主真目录
+# 用 **conftest 导入时** 的环境算用户真实数据根，并固化成常量：
+# 这样即使某个测试 monkeypatch 了 LOCALAPPDATA，这里仍然指向用户真目录
 # （护栏本身绝不能被测试自己的隔离手段带偏）。conftest 是本目录最早被导入的
 # 文件，此刻环境还是干净的。
 _REAL_LOCALAPPDATA = os.environ.get("LOCALAPPDATA") or str(Path.home())
@@ -88,7 +88,7 @@ _IRREPLACEABLE = (
 
 
 def _fingerprint_real_data() -> dict:
-    """{相对路径: "size:mtime_ns:sha256"} —— 机主真实数据根下那批不可再生文件的指纹。
+    """{相对路径: "size:mtime_ns:sha256"} —— 用户真实数据根下那批不可再生文件的指纹。
 
     带上 size/mtime 是为了让失败信息直接可读（"从 1174 字节变成 1101 字节"比
     两串哈希好懂得多）；带上 sha256 是为了抓"大小没变但内容被改写"。
@@ -143,7 +143,7 @@ def _pin_launcher_config(fake: Path, monkeypatch) -> list:
     `import` 搬的是**值**（同一个 Path 对象的引用），`launcher_v9.CONFIG_FILE` 是
     **另一个名字绑定**。只打 `launcher_v8.CONFIG_FILE` 的话，v9 里
     `load_config()/save_config()` 读的是它自己的那个全局，**照旧指向真实路径**。
-    （实测：打桩 v8 之后 `launcher_v9.CONFIG_FILE` 仍指向机主真配置。）
+    （实测：打桩 v8 之后 `launcher_v9.CONFIG_FILE` 仍指向用户真配置。）
 
     这里**主动 import** 而不是只扫 `sys.modules`：若将来有人把
     `import launcher_v9` 写在测试函数体内（惰性导入），fixture 跑的时候它还没进
@@ -165,7 +165,7 @@ def _pin_launcher_config(fake: Path, monkeypatch) -> list:
 
 @pytest.fixture(autouse=True)
 def never_touch_the_real_data_root(tmp_path, monkeypatch):
-    """**全仓库 autouse**：每个测试前后都不许动机主的真实数据。
+    """**全仓库 autouse**：每个测试前后都不许动用户的真实数据。
 
     autouse 是刻意的 —— 这条护栏的价值全在"不需要任何人记得它存在"。
     要新增一个测试却什么都不做，就已经是安全的。
@@ -200,10 +200,10 @@ def never_touch_the_real_data_root(tmp_path, monkeypatch):
             + (f"     新建顶层条目: {new_top}\n" if new_top else ""))
 
     raise AssertionError(
-        "❌ 这个测试改写了机主的**真实**数据（已破坏，不会自动还原）！\n"
+        "❌ 这个测试改写了用户的**真实**数据（已破坏，不会自动还原）！\n"
         f"   数据根: {_REAL_DATA_ROOT}\n"
         + "\n".join(parts) +
-        "\n   为什么必须当失败处理：这些文件里是机主的登录态/密钥，"
+        "\n   为什么必须当失败处理：这些文件里是用户的登录态/密钥，"
         "丢了就找不回来 —— 静默写坏的代价远大于一条红测试。\n"
         "   怎么修：① 用 `tmp_path`，别把数据根指到真实目录；"
         "② 若被测代码在**导入期**就把路径固化成了模块常量"

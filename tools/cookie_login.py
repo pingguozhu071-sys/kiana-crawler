@@ -14,7 +14,7 @@
 `cli.py` 是**引擎任务管理**子命令（status/export/errors/rule-*/cookie-add），
 本脚本是**用户一次性的登录动作**，且它会**弹一个有头浏览器** ——
 把它塞进引擎 CLI 会让"跑个 status 就可能弹窗"这种事发生。放在 `tools/` 与
-`yt_download.py` / `live_regression.py` 这些"机主本地手动用具"同类；
+`yt_download.py` / `live_regression.py` 这些"用户本地手动用具"同类；
 真正的模块逻辑在 `kiana_vnext_plus/cookie_profile.py`（GUI 下一轮直接 import 那个模块）。
 
 ## 退出码（`release_check` 那套语义）

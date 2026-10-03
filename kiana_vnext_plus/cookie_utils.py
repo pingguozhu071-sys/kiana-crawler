@@ -42,7 +42,7 @@ def parse_cookie_file_list(text) -> List[str]:
 # 而 **B站的 `SESSDATA` 恰好是 HttpOnly** ⇒ 拿这种文件时**登录态会被静默丢掉**，
 # 表现为"文件看着是好的、服务端却说未登录"（正是本工程吃过的 `code=-101`）。
 #
-# 机主当前那份 hand-export 的文件**没有** `#HttpOnly_`（实测 0 行）所以没事；
+# 用户当前那份 hand-export 的文件**没有** `#HttpOnly_`（实测 0 行）所以没事；
 # 但 **yt-dlp 的 `YoutubeDLCookieJar` 与多数浏览器扩展都会写它** ——
 # 一旦换用那种导出方式，这个 bug 立刻发作，且**一声不响**。
 # ══════════════════════════════════════════════════════════════════════
@@ -216,7 +216,7 @@ def _sources_from_explicit(explicit: str) -> List[Dict[str, object]]:
 
     ══ [v6 修复·**真机踩到的"影子文件"**] ══════════════════════════════
     第 ③④ 档原来写成"默认位置存在就 return 它，配置档永远轮不到"。**那是错的**：
-    机主机器上躺着一个 **9 天前的失效 `%LOCALAPPDATA%\\KianaVnextPlus\\cookies.txt`**
+    用户机器上躺着一个 **9 天前的失效 `%LOCALAPPDATA%\\KianaVnextPlus\\cookies.txt`**
     （实测服务端答 `code=-101 isLogin=False`），而他刚用 GUI 登录成功的新配置档
     （`profiles/bilibili/cookies.txt`，实测 `isLogin=True vip=1`）
     **被那个旧文件整个挡住了** ⇒ 表现就是"**登录了但还是 480P**"。

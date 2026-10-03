@@ -557,7 +557,7 @@ class TestEngineSelectsVerifiedChannel(unittest.TestCase):
         self.assertIn("桩：add_init_script 未执行", eng.patchright_channel_reason)
         joined = "\n".join(cm.output)
         self.assertIn("注入通道", joined,
-                      "回退必须在日志里留下可读原因（否则机主只看到 plugins=0，无从定位）")
+                      "回退必须在日志里留下可读原因（否则用户只看到 plugins=0，无从定位）")
 
     def test_working_patchright_channel_keeps_patchright(self):
         """patchright 真能注入时就该用它（回退不是"一律不用 patchright"）"""

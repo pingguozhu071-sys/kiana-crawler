@@ -25,7 +25,7 @@ if await self.frontier.count_done_total() >= self.project.config.limits.max_page
 `detect_bilibili_cookie_browser` 只检查「cookies 文件里有没有 `bilibili` 这个词」，
 日志却宣称「检测到 B站**会员** cookies → **强制最高画质**」。
 
-真机后果：机主的 cookies 字段齐全（SESSDATA/bili_jct/DedeUserID）、文件声明 2027 才过期，
+真机后果：用户的 cookies 字段齐全（SESSDATA/bili_jct/DedeUserID）、文件声明 2027 才过期，
 但服务端回 **`-101 账号未登录`** → 实际只拿到 **480P**，日志却在报"最高画质"。
 
 修后日志如实说：

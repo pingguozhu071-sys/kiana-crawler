@@ -10,7 +10,7 @@ from html import unescape as _html_unescape
 
 # [FIXED & MODIFIED] v2.9.2 缺 logger 定义：v2.6.5 trafilatura 异常兜底用 logger.debug
 # 但模块从未定义 logger → trafilatura 抛异常时 NameError 传播 → "Job failed: name 'logger'
-# is not defined"（机主 GUI 实测 0 pages 根因）——B站风控页触发 trafilatura 异常路径
+# is not defined"（用户 GUI 实测 0 pages 根因）——B站风控页触发 trafilatura 异常路径
 logger = logging.getLogger(__name__)
 
 try:
@@ -23,14 +23,14 @@ try:
 except Exception:
     # [FIXED & MODIFIED] v2.6.6 捕获所有异常（不只 ImportError）：trafilatura 2.2.0 在
     # 打包环境（onefile _MEI 路径）可能 import 即抛 configparser.NoOptionError
-    # （"No option 'min_extracted_size' in section: 'DEFAULT'"——机主 GUI 实测 0 pages 根因）
+    # （"No option 'min_extracted_size' in section: 'DEFAULT'"——用户 GUI 实测 0 pages 根因）
     trafilatura = None
 
 if trafilatura is not None:
     try:
         # [FIXED & MODIFIED] v2.6.6 配置键兜底注入：打包环境 settings.cfg 可能未加载 →
         # DEFAULT_CONFIG 缺 min_extracted_size 等键 → extract() 内部 config.get 抛
-        # NoOptionError → 整页处理失败（机主 BV16Uud6JEN5 日志实锤）。手动注入保证键存在。
+        # NoOptionError → 整页处理失败（用户 BV16Uud6JEN5 日志实锤）。手动注入保证键存在。
         import trafilatura.settings as _traf_settings
         for _k, _v in (("min_extracted_size", "250"), ("min_extracted_comm_size", "1"),
                        ("min_output_size", "1"), ("min_output_comm_size", "1")):
@@ -50,7 +50,7 @@ def extract_metadata(html, url, base_url=None):
     为什么必须分开：短链种子（b23.tv/xxx → www.bilibili.com/video/BV…）下，页面里的
     `/video/BVxxx` 是**相对 www.bilibili.com 的**。以短链主机为基址会拼出
     `https://b23.tv/video/BVxxx`——这个地址**不存在**（短链服务只认它自己发的短码），
-    于是每一页出链都 404（机主实测 19/31 页失败的唯一原因）。
+    于是每一页出链都 404（用户实测 19/31 页失败的唯一原因）。
     `base_url` 缺省/为空时退回 `url` —— **未发生重定向时行为与改前逐字一致**。
     """
     # 相对链接的解析基址：终到地址优先，缺失则退回请求 URL
@@ -150,7 +150,7 @@ def extract_metadata(html, url, base_url=None):
         # [FIXED & MODIFIED] v2.6.5 trafilatura 异常降级兜底——
         # trafilatura 2.2.0 内部 configparser 引用 options.min_extracted_size 配置缺失时
         # 抛 configparser.NoOptionError（No option 'min_extracted_size' in section: 'DEFAULT'）
-        # 导致整个页面处理失败（机主实测 0 pages done）→ 兜底用 article/main 纯文本
+        # 导致整个页面处理失败（用户实测 0 pages done）→ 兜底用 article/main 纯文本
         try:
             extracted = trafilatura.extract(html, output_format="json", url=url)
         except Exception as _e:
@@ -214,7 +214,7 @@ def extract_metadata(html, url, base_url=None):
     # [实测 v2.19.8 实体解码] `html.unescape`：`<img src>` 的实体由 lxml 顺手解了，
     # 但 **`<a href>` 不会**（实测同一份 HTML：img 的 `&amp;` → `&`，a 的 `&amp;` 原样留存）。
     # 不解的下场不是"多一个字符"而是**把 & 当普通字符百分号编码**：`?a=1&amp;b=2`
-    # 原样拼进 URL → 规范化后变成 `?a=1%26amp%3Bb=2`（机主日志里的 `?amp%3Btrackid=`
+    # 原样拼进 URL → 规范化后变成 `?a=1%26amp%3Bb=2`（用户日志里的 `?amp%3Btrackid=`
     # 正是这个形状）→ **服务端收到一个不存在的参数名**，链接必 404。
     # 只解一层：与浏览器对 href 的处理一致（HTML 规范规定属性值按字符引用解码一次）。
     for a in soup.find_all("a", href=True):

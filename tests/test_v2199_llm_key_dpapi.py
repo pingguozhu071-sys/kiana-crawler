@@ -3,7 +3,7 @@
 
 ## 为什么该加密（结论，不是"顺手统一"）
 
-`llm_key` 原先是明文存在机主真实 `%LOCALAPPDATA%\\KianaVnextPlus\\launcher_config.json`
+`llm_key` 原先是明文存在用户真实 `%LOCALAPPDATA%\\KianaVnextPlus\\launcher_config.json`
 里的 API Key。逐条核过之后判定**应当加密**，依据是三条代码事实：
 
 1. 它**唯一**的活消费者是**进程内**的 `run_crawler._maybe_llm_enhancer`
@@ -21,7 +21,7 @@
 
 ## 纪律
 
-⚠️ **本文件绝不读机主的真实配置**，也绝不把它写进任何断言消息：所有数据根都被
+⚠️ **本文件绝不读用户的真实配置**，也绝不把它写进任何断言消息：所有数据根都被
 `data_root()` 打桩到 `tmp_path`（`secrets/` 也随之落在 tmp 里）。
 """
 import pathlib
@@ -135,7 +135,7 @@ class TestLegacyPlaintextMigration:
 
     def test_the_gui_migrates_at_startup_not_at_next_save(self, isolated):
         """**启动钩子是承重的**：迁移只在内存字典里抹明文，真正落盘要靠调用方再
-        `save_config()`。少了这一步，机主的明文 Key 会一直在磁盘上躺着
+        `save_config()`。少了这一步，用户的明文 Key 会一直在磁盘上躺着
         （打码密钥那条也是靠同一个启动钩子）。"""
         import ast
         src = (ROOT / "launcher_v9.py").read_text(encoding="utf-8")

@@ -121,7 +121,7 @@ class TestSiteRegistry(unittest.TestCase):
                              "归一时会被剥掉 → 与其他站撞车")
 
     def test_all_required_sites_present(self):
-        """机主要抓的那 6 个平台一个都不能少（少一个就是功能没做完）"""
+        """用户要抓的那 6 个平台一个都不能少（少一个就是功能没做完）"""
         from kiana_vnext_plus import cookie_profile as cp
         keys = {m["site_key"] for m in cp.SITE_PROFILES.values()}
         for want in ("bilibili", "douyin", "tieba", "kuaishou", "xiaohongshu", "wechat_mp"):
@@ -178,7 +178,7 @@ class TestProfileDirectories(unittest.TestCase):
         """**红线**：绝不落在用户日常 Chrome 的 User Data 里
 
         Chrome 136 起 `--remote-debugging-*` 配默认用户数据目录会被忽略（防信息窃取），
-        而且去连日常配置档本身就是在动机主的私人数据。
+        而且去连日常配置档本身就是在动用户的私人数据。
         """
         from kiana_vnext_plus import cookie_profile as cp
         low = str(cp.profile_dir("bilibili")).lower().replace("/", "\\")
@@ -661,7 +661,7 @@ class TestCliEntryPoint(unittest.TestCase):
 
         这条是"CLI 独立跑得通"的最强证据：不碰浏览器，但走完了
         站点解析 → 配置档定位 → 读 state → 写 cookies.txt 的**全链路**，
-        并且用的是**子进程 + 隔离的 LOCALAPPDATA**（不污染机主的真实数据根，
+        并且用的是**子进程 + 隔离的 LOCALAPPDATA**（不污染用户的真实数据根，
         也不给仓库留 KianaData/）。
         """
         from kiana_vnext_plus import cookie_profile as cp
@@ -704,7 +704,7 @@ class TestCliEntryPoint(unittest.TestCase):
 class TestWindowCloseStillExports(unittest.TestCase):
     """**真机踩到的致命 bug 的回归测试**：用户关窗口后必须仍能导出。
 
-    ## 现象（机主 2026-10-03 实测）
+    ## 现象（用户 2026-10-03 实测）
     扫码登录成功、主页也进去了、按提示关了窗口 →
     **界面说"没有正常获取到"**，而配置档目录里
     **`cookies.txt` 与 `storage_state.json` 都不存在**。

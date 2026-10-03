@@ -8,7 +8,7 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 # Python314 版本绝对路径——换机/升 Python 构建必炸）。照抄 universal_downloader
 # 的动态定位模式。
 def _find_ddddocr_dir():
-    # [v6] **优先工程内的 vendor 副本**（机主要求"打包也打进去"），没有才退回 site-packages。
+    # [v6] **优先工程内的 vendor 副本**（用户要求"打包也打进去"），没有才退回 site-packages。
     _v = _P(SPECPATH) / "vendor" / "ddddocr"
     if _v.is_dir():
         return str(_v)
@@ -36,7 +36,7 @@ hiddenimports = []
 hiddenimports += collect_submodules('kiana_vnext_plus')
 
 # ── [v6] 内置第三方部件（`vendor/`）：camoufox 隐身内核 + ddddocr 验证码 ──────────
-# 机主要求"打包也打进去"。⚠️ 源码**不入 git**（见 `vendor/README.md`），但**要打进 exe**。
+# 用户要求"打包也打进去"。⚠️ 源码**不入 git**（见 `vendor/README.md`），但**要打进 exe**。
 _SPEC_DIR = _P(SPECPATH)
 _vendor_dir = _SPEC_DIR / "vendor"
 _pathex = []

@@ -91,7 +91,7 @@ async def fetch_source(session, entry: dict) -> list:
     """单源拉取：api → GET+解析；static → 直排返回
 
     [v2.19.7 安全·扫描发现] 原为裸 `session.get`（follows redirects）。这里的源 URL 来自
-    环境变量 KIANA_PROXY_SOURCES，虽是机主自填，但重定向链完全在外部控制下（代理源被
+    环境变量 KIANA_PROXY_SOURCES，虽是用户自填，但重定向链完全在外部控制下（代理源被
     劫持/302 到内网 = 把内网响应喂进代理池）。统一走 safe_get 的逐跳校验。"""
     if entry["kind"] == "api":
         from .url_utils import safe_get

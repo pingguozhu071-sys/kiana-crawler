@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """短链种子：相对链接必须按**终到地址**解析（实测 v2.19.8 抓到的真 bug）
 
-## 现场（机主真机跑短链种子）
+## 现场（用户真机跑短链种子）
 
 种子 `https://b23.tv/n2vFgzi` → B 站短链服务 302 → `https://www.bilibili.com/video/BV1zJhr6bEVa`。
 结果 **12 页成功 / 19 页失败**，失败全是同一个原因——**相对链接被拼到了短链主机上**：
@@ -295,7 +295,7 @@ class TestParserBaseUrl(unittest.TestCase):
 
 
 class TestHtmlEntityDecoded(unittest.TestCase):
-    """机主日志里的 `?amp%3Btrackid=` 形状：`<a href>` 没解 HTML 实体。
+    """用户日志里的 `?amp%3Btrackid=` 形状：`<a href>` 没解 HTML 实体。
 
     实测依据（同一次探针）：lxml 会把 `<img src>` 的 `&amp;` 解成 `&`，
     **但 `<a href>` 不会**——于是 `&` 被当普通字符百分号编码成 `%26`，

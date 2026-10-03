@@ -32,7 +32,7 @@ from pathlib import Path
 # GBK **编码不了** U+2705/U+274C，于是 `UnicodeEncodeError` 当场崩（实测复现）：
 #     UnicodeEncodeError: 'gbk' codec can't encode character '\u2705'
 # 以前靠调用方自己设 `PYTHONIOENCODING=utf-8` 绕过 —— 那是"要求人记得加参数"，
-# 与"默认就能用"的纪律相反（机主也确实被这个坑绊过）。这里在脚本内部把它修掉：
+# 与"默认就能用"的纪律相反（用户也确实被这个坑绊过）。这里在脚本内部把它修掉：
 # 显式把两个流改成 UTF-8，并留 `errors="replace"` 作第二道保险 —— 万一某个流
 # 不支持 reconfigure，也只是把个别符号降级成 `?`，而不是整个工具崩掉。
 # ─────────────────────────────────────────────────────────────

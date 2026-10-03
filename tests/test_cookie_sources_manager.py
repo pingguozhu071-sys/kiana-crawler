@@ -3,7 +3,7 @@
 
 ## 这个功能真正要防的是什么
 
-机主的原话是"你现在无法同时管理多个 cookies"。但**引擎一直就支持多份**
+用户的原话是"你现在无法同时管理多个 cookies"。但**引擎一直就支持多份**
 （`KIANA_COOKIE_FILES` 分号/换行分隔，`_ensure_cookie_file` 合并时**先到先得**）。
 缺的从来不是引擎能力，而是**看得见**：
 
@@ -60,7 +60,7 @@ def _isolated_env(tmp_path, monkeypatch):
     """把 `LOCALAPPDATA` 指到临时目录，并清掉两个 cookies 环境变量。
 
     为什么必须 autouse：默认位置与 `profiles/*/cookies.txt` 都挂在
-    `%LOCALAPPDATA%\\KianaVnextPlus\\` 下。不隔离的话，**机主本机的真实 cookies**
+    `%LOCALAPPDATA%\\KianaVnextPlus\\` 下。不隔离的话，**用户本机的真实 cookies**
     会跑进断言里 —— 那既会让测试随本机状态飘，也可能把真实路径写进失败输出。
     """
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
@@ -143,7 +143,7 @@ class TestResolveCookieSources:
         `%LOCALAPPDATA%\\KianaVnextPlus\\cookies.txt` 里躺着一个**9 天前的失效文件**
         时，原实现会"默认位置存在就直接返回"，于是**刚刚用 GUI 登录好的
         `profiles/bilibili/cookies.txt` 被整个挡住** ——
-        表现正是机主报的"登录明明成功了，抓取还是 480P"。
+        表现正是用户报的"登录明明成功了，抓取还是 480P"。
 
         为什么单测抓不到它：所有单测都用**空的临时目录**，
         没有"默认位置恰好躺着一个旧文件"这种状态。
@@ -524,7 +524,7 @@ class TestOffscreenWiring:
 
     为什么值得真构造一次：AST 断言只能证明"代码里写了"，证明不了
     "属性真的存在、点下去真的不炸"。离屏构造（`QT_QPA_PLATFORM=offscreen`，
-    不 `show()`）两者都能覆盖，而且一个像素都不会出现在机主屏幕上。
+    不 `show()`）两者都能覆盖，而且一个像素都不会出现在用户屏幕上。
     """
 
     @pytest.fixture
@@ -537,10 +537,10 @@ class TestOffscreenWiring:
         # 路径钉到 tmp —— 上面那句 `setenv("LOCALAPPDATA", tmp_path)` 对它**无效**。
         #
         # 为什么：`launcher_v8.py:45  CONFIG_FILE = _launcher_config_path()` 是
-        # **导入期**求值的模块常量，import 那一刻就把机主真实的
+        # **导入期**求值的模块常量，import 那一刻就把用户真实的
         # `%LOCALAPPDATA%\KianaVnextPlus\launcher_config.json` 定死了。
         # 本 fixture 后面每一次 `win.home.cookie_edit.setText(...)`（→ `_on_cookie_home`
-        # → `save_config`）都会写那份真配置 —— 本文件确实这么干过：机主的
+        # → `save_config`）都会写那份真配置 —— 本文件确实这么干过：用户的
         # `cookie_file` 被抹成 `""`，刚登录好的 B站 cookies 路径没了。
         #
         # 为什么**两个模块都要打**：`launcher_v9.py:86` 是

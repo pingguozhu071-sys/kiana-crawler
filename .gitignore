@@ -35,12 +35,12 @@ http_cache/
 # 不忽略会让门禁第 2 项（git status 必须干净，未跟踪文件也算脏）直接 FAIL。
 .claude.local.md
 
-# ── 外部部件源码：**绝不入库**（机主 2026-10-02 指示）────────────────────
+# ── 外部部件源码：**绝不入库**（用户 2026-10-02 指示）────────────────────
 # A(camoufox, MPL-2.0) 与 B(ddddocr, MIT) 是本工程**内置的第三方部件**。
-#   用途：本机个人使用 + 打包时一并打进 exe（机主要求）
+#   用途：本机个人使用 + 打包时一并打进 exe（用户要求）
 #   规矩：**源码一律不进 git 仓库**（它们是上游项目，混进历史既踩许可边界，
 #         也让"这仓库到底是谁的代码"说不清）。只推"怎么装、怎么 import"的说明。
-# 机主本机的放置位置：`vendor/`（由 `pip install --target vendor --no-deps` 生成）
+# 用户本机的放置位置：`vendor/`（由 `pip install --target vendor --no-deps` 生成）
 # 唯一入库的是 `vendor/README.md`（安装说明）。
 vendor/*
 !vendor/README.md

@@ -93,7 +93,7 @@ KNOWN_INTERNAL = {
     "m3u8_concurrency": "TUNING",                # m3u8 分片并发
     "protocol_engine_impersonate": "TUNING",     # curl_cffi TLS 指纹档
     "forbid_direct": "SAFE",                     # 禁止直连（安全默认，刻意不给开关）
-    # Redis 后端：**机主 2026-10-03 明确决定废弃**。
+    # Redis 后端：**用户 2026-10-03 明确决定废弃**。
     # 键保留只为兼容旧配置；引擎默认 `sqlite`，读到别的值也不会自己启用 Redis。
     # **刻意不给入口** —— 那条路已废弃，给了开关反而误导。
     # ⚠️ 若将来要复活，**必须先补入口**（否则用户永远切不过去，见 docs 待办 P-D）。

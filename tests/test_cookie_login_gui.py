@@ -542,7 +542,7 @@ class TestLoginButtonWiring(unittest.TestCase):
     def test_cookie_input_stays_on_home(self):
         """[v7 决策] Cookies **输入框留在首页**（每次抓取都要看一眼），登录/管理在设置页。
 
-        这条不是"顺手记一笔"：它是本轮唯一一处**机主留给我的判断题**，
+        这条不是"顺手记一笔"：它是本轮唯一一处**用户留给我的判断题**，
         而它一旦被后来者改掉（把框也挪走），`_start()` 就会读到空值 ⇒
         引擎按无 cookies 跑、界面一片正常 —— 正是本工程最忌讳的那类静默失效。
         """
@@ -879,14 +879,14 @@ class TestOffscreenNoPrivacyLine:
     """AST 只能证明"代码里没写"，证明不了"控件真的不存在 / 真的不卡"。
 
     这里离屏构造真窗口（`QT_QPA_PLATFORM=offscreen`，**不 show()**，
-    一个像素都不出现在机主屏幕上），把这两件事点验一遍。
+    一个像素都不出现在用户屏幕上），把这两件事点验一遍。
     """
 
     @pytest.fixture
     def win(self, tmp_path, monkeypatch):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         # 数据根挪到临时目录：离屏构造会读 launcher_config / cookies 来源，
-        # 不许碰到机主真实的 %LOCALAPPDATA%\KianaVnextPlus
+        # 不许碰到用户真实的 %LOCALAPPDATA%\KianaVnextPlus
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         monkeypatch.delenv("KIANA_COOKIE_FILES", raising=False)
         monkeypatch.delenv("KIANA_COOKIE_FILE", raising=False)
@@ -897,14 +897,14 @@ class TestOffscreenNoPrivacyLine:
         # ⚠️ **必须在构造之前**就把 `save_config` 换成空操作。
         # 为什么：`launcher_v8.CONFIG_FILE` 是**导入期**算好的（`_launcher_config_path()`
         # 在模块顶部就调用了），所以上面那句 `setenv("LOCALAPPDATA", …)` 对
-        # 启动器配置**不生效** —— 任何一次 `save_config` 都会写到机主真实的
+        # 启动器配置**不生效** —— 任何一次 `save_config` 都会写到用户真实的
         # `%LOCALAPPDATA%\KianaVnextPlus\launcher_config.json`。
         # 而这个 fixture 会改 Cookies 框（→ `_on_cookie_home` → `save_config`），
-        # 不屏蔽就等于"跑一次测试改一次机主的配置"。
+        # 不屏蔽就等于"跑一次测试改一次用户的配置"。
         monkeypatch.setattr(gui, "save_config", lambda *a, **k: None)
         # [v2.19.9] 再把**路径本身**也钉到 tmp。比"把 save_config 打成空操作"更彻底：
-        # 空操作只挡写入，`load_config()` 照样读机主的真配置 → `win.config` 里带着
-        # 机主的 `cookie_file`，测试结果就随机主本机状态漂。钉住路径后读写都在 tmp 里。
+        # 空操作只挡写入，`load_config()` 照样读用户的真配置 → `win.config` 里带着
+        # 用户的 `cookie_file`，测试结果就随用户本机状态漂。钉住路径后读写都在 tmp 里。
         # 两个模块都要打：`launcher_v9.py:86` 是 `from launcher_v8 import CONFIG_FILE`
         # —— import 搬的是值，`gui.CONFIG_FILE` 是另一个名字绑定。
         fake_cfg = tmp_path / "launcher_config.json"

@@ -1,7 +1,7 @@
 """v9 最小引擎触发：example.com 快速失败——判定死因与 crawl 内容是否相关
 
 [v2.19.9] 加**默认隔离**：本脚本原先零隔离，直接 `KianaV9()` 构造 + `engine.start()`，
-会真写真读机主数据根（`launcher_config.json` / `secrets/` / `http_cache/`）。
+会真写真读用户数据根（`launcher_config.json` / `secrets/` / `http_cache/`）。
 现在默认把数据根重定向到临时目录，跑完即删；要对真机跑请显式加 `--real`。
 """
 from pathlib import Path

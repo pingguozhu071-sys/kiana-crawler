@@ -166,7 +166,7 @@ def _ensure_cookie_file() -> Optional[pathlib.Path]:
     if not srcs:
         return None
     # [v6 修复·真机实测踩到] **配置了路径但文件不存在** ≠ "没配 cookies"。
-    # 机主实测：界面上 cookies 填的是 `www.bilibili.com_cookies.txt`，
+    # 用户实测：界面上 cookies 填的是 `www.bilibili.com_cookies.txt`，
     # 但浏览器下载新文件时改名成了 `www.bilibili.com_cookies (1).txt` ——
     # 旧路径失效 → 这里静默返回 None → 日志只说"未检测到 B站 cookies" →
     # **实际后果是全套 480P**，而用户以为自己配好了。
@@ -291,7 +291,7 @@ def _ffmpeg_dir():
 # 只有"重试多少次" —— 而重试次数对"慢"这件事完全不敏感：它只会让慢的东西慢 10 遍。
 #
 # **判据为什么是"持续低速"而不是"瞬时低速"**：
-#   · 机主可能在**慢网络**上跑 —— 一次采样慢 ≠ 卡死，必须**整个观察窗内均速都低**；
+#   · 用户可能在**慢网络**上跑 —— 一次采样慢 ≠ 卡死，必须**整个观察窗内均速都低**；
 #   · 窗口内的突发快传会把均值拉高，所以"抖一下"不会误杀；
 #   · 先拿到 `STALL_MIN_BYTES_BEFORE_WATCH` 才开始判定 —— "压根连不上"是超时该管的事，
 #     不该被本条判成"慢"。
@@ -598,7 +598,7 @@ def verify_bilibili_login(timeout: int = 8):
     "cookies 文件里有没有 `bilibili` 这个词"**，却在日志里宣称
     「检测到 B站**会员** cookies → 强制最高画质」—— **用无关的检查冒充成功**。
 
-    实测（机主的 cookies）：字段齐全（SESSDATA/bili_jct/DedeUserID）、
+    实测（用户的 cookies）：字段齐全（SESSDATA/bili_jct/DedeUserID）、
     文件声明 2027-03 才过期，但服务端回 **`-101 账号未登录`**
     → 实际只拿到 480P，日志却在报"最高画质"。
     文件里的过期时间只是**客户端声明**，服务端随时可作废。
@@ -614,7 +614,7 @@ def verify_bilibili_login(timeout: int = 8):
     # 原来是个裸的全局缓存（`if _bili_login_cache is not None: return`）——
     # **第一次调用的结果被永久钉死**：若那次发生在 cookies 就位之前
     # （或撞上一次瞬时失败），后面全程都返回那个陈旧结论。
-    # 真机表现：机主的 cookies 单独测是 `(True, True, 'code=0 OK')`，
+    # 真机表现：用户的 cookies 单独测是 `(True, True, 'code=0 OK')`，
     # 而爬取日志却报 `⚠️ B站 cookies 已失效（code=-101）` → **整套降成 480P**。
     _cf_sig = ""
     try:
@@ -954,7 +954,7 @@ class UniversalDownloader:
                 import yt_dlp
                 # [FIXED & MODIFIED] v2.6.7 根治 ffmpeg 合并的 gbk 崩溃：B站 dash 流 metadata 含
                 # UTF-8 中文 → ffmpeg 输出非 GBK 字节 → subprocess text 模式 gbk 解码崩溃 →
-                # 合并失败 → 分离流被清理 → 机主"空文件夹"。locale 设 UTF-8 后 subprocess 用 utf-8。
+                # 合并失败 → 分离流被清理 → 用户"空文件夹"。locale 设 UTF-8 后 subprocess 用 utf-8。
                 try:
                     import locale
                     locale.setlocale(locale.LC_CTYPE, 'C.UTF-8')
@@ -962,7 +962,7 @@ class UniversalDownloader:
                     pass
                 # [FIXED & MODIFIED] v2.6.7 文件名改回 hash（原 %(title)s 中文标题 → ffmpeg 合并时
                 # subprocess 输出含 UTF-8 中文 → Windows gbk 解码崩溃（UnicodeDecodeError）→ 合并失败
-                # → 分离流被清理 → 机主"空文件夹"根因。hash 名纯 ASCII 彻底免疫。
+                # → 分离流被清理 → 用户"空文件夹"根因。hash 名纯 ASCII 彻底免疫。
                 name = self._safe_name(url)
                 # [v2.17 2.11 加固] out_tmpl 绝对化：yt-dlp 会把相对 outtmpl 与 paths.home
                 # 再拼一层 → 'out/videos/out/videos/...' 双前缀（CLI -o 相对路径即踩中，
@@ -975,7 +975,7 @@ class UniversalDownloader:
                 #
                 # [v6 修复·真机实测发现] 这里原来**只看"cookies 文件里有没有 bilibili 这个词"**，
                 # 却在日志里下"**会员** cookies → **强制最高画质**"的结论 ——
-                # **用无关的检查冒充成功**。实测机主的 cookies：字段齐全、文件声明 2027 到期，
+                # **用无关的检查冒充成功**。实测用户的 cookies：字段齐全、文件声明 2027 到期，
                 # 但服务端回 `-101 账号未登录` → 实际只拿到 480P，日志却在报"最高画质"。
                 # 现改成**真调一次 nav 接口**核实登录态，并按事实说话。
                 cookie_browser = detect_bilibili_cookie_browser()
@@ -1015,7 +1015,7 @@ class UniversalDownloader:
                              # [FIXED & MODIFIED] v2.10.4 自包含：ffmpeg_location 指向打包的 ffmpeg
                              # （PyInstaller _MEIPASS 或程序目录——换机即用，不依赖系统 ffmpeg）
                              'ffmpeg_location': str(_ffmpeg_dir()),
-                             # [FIXED & MODIFIED] v2.6.3 忽略一切外部配置（机主 GUI 实测报
+                             # [FIXED & MODIFIED] v2.6.3 忽略一切外部配置（用户 GUI 实测报
                              # "No option 'min_extracted_size' in section: 'DEFAULT'"——外部 yt-dlp
                              # 配置干扰。引擎自带完整 opts，不需要任何外部配置文件）
                              'ignoreconfig': True,
@@ -1056,7 +1056,7 @@ class UniversalDownloader:
                     opts['progress_hooks'] = ytdlp_progress_hooks(_wd)
                     # [FIXED & MODIFIED] v2.6.13 关键修复：out_tmpl 必须显式传入 opts——
                     # 此前只算了变量没写进 opts → yt-dlp 用默认模板（%(title)s [%(id)s]）下载到
-                    # 进程 cwd（KianaVnextPlus 工程目录）→ export/videos 永远空 → 机主"空文件夹"
+                    # 进程 cwd（KianaVnextPlus 工程目录）→ export/videos 永远空 → 用户"空文件夹"
                     # 终极根因（completed 正确但文件不在产物目录）。
                     opts['outtmpl'] = out_tmpl
                     opts['paths'] = {'home': str(self.video_dir.resolve())}
@@ -1101,7 +1101,7 @@ class UniversalDownloader:
                         p = Path(result)
                         # [FIXED & MODIFIED] v2.6.7 排除 dash 分离流（.f137.mp4/.f140.m4a 等）：
                         # 合并失败时 prepare_filename 返回分离流路径（下载中曾存在）→ p.exists()
-                        # 误判成功 → 误标 completed + 文件随后被 yt-dlp 清理 → 机主空文件夹
+                        # 误判成功 → 误标 completed + 文件随后被 yt-dlp 清理 → 用户空文件夹
                         if p.exists() and not re.search(r'\.f\d+\.(mp4|m4a|webm|mkv|m4s)$', p.name):
                             # [v6 修复·R6] 第二道防线：**产物得像视频**。
                             # 真机上短链误解析出的假 URL 会让 yt-dlp 不报错地存下
@@ -1125,7 +1125,7 @@ class UniversalDownloader:
                     if new:
                         p = list(new)[0]
                         # [FIXED & MODIFIED] v2.6.10 兜底同样排除 dash 分离流（.f137.mp4 等）——
-                        # 否则合并失败时误标 completed + 文件随后被清理（机主空文件夹根因）
+                        # 否则合并失败时误标 completed + 文件随后被清理（用户空文件夹根因）
                         if not re.search(r'\.f\d+\.(mp4|m4a|webm|mkv|m4s)$', p.name):
                             # [v6 修复·R6] 兜底路径也要过"像不像视频"这一关
                             _why2 = video_artifact_problem(p)
@@ -1333,7 +1333,7 @@ class UniversalDownloader:
 
     # ═══ File: generic HTTP ═══
     async def download_file(self, url: str, subdir: str = '') -> Optional[Path]:
-        """[FIXED & MODIFIED] v2.6.2 通用文件下载（mp4/mp3/pdf/zip 等任意直链——机主直链输入的核心通道）
+        """[FIXED & MODIFIED] v2.6.2 通用文件下载（mp4/mp3/pdf/zip 等任意直链——用户直链输入的核心通道）
         增强：防盗链 headers + 真实扩展名保留（原 pdf/zip 被强制改名 .mp4）+ 域名分类落盘"""
         # [FIXED & MODIFIED] v2.14 阶段3 SSRF 闸：私网/环回/非 http(s) 一律拒绝
         # （攻击页可驱使爬虫抓 127.0.0.1/169.254.169.254 云元数据并落盘带回传通道）
@@ -1376,7 +1376,7 @@ class UniversalDownloader:
                 if _ref:
                     headers["Referer"] = _ref
                 # [FIXED & MODIFIED] curl_cffi 标准用法（原 async with session.get() 不支持 →
-                # coroutine never awaited → download_file 从未成功——机主文件直链输入的致命 bug）
+                # coroutine never awaited → download_file 从未成功——用户文件直链输入的致命 bug）
                 # [FIXED & MODIFIED] v2.6.4 header 组合降级：部分站点对 Chrome UA + 无 cookie 请求 403
                 # （w3.org 实测仅 Referer/无头反而 200）——多组合尝试兜底
                 # [v2.16.1] 断点续传：先探测（size/resumable），再走 .part+Range 流式；

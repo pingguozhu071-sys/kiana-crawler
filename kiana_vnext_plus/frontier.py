@@ -601,7 +601,7 @@ class FrontierDB:
     async def add_video_download(self, video_url, domain):
         # [v6 修复·R4 收口] **HTML 实体/百分号编码的残渣在这里统一清掉。**
         #
-        # 真机日志（机主 2026-10-03 那次 GUI 抓取）：
+        # 真机日志（用户 2026-10-03 那次 GUI 抓取）：
         #     `B站视频入队: https://www.bilibili.com/video/BV1PSL96YEwp?amp%3Btrackid=we`
         # `amp;` 是 `&amp;` 被砍掉首字符、`;` 又被百分号编码成 `%3B` 的产物。
         # 这类 URL **能下**（多一个无用参数），但会被当成**独立的下载键** ——
@@ -617,7 +617,7 @@ class FrontierDB:
         # 任务的**钥匙**（签名 CDN 链接），update_video_status 也按它做 WHERE 匹配。抹掉
         # 签名参数 = 视频永远下不动，还会让状态更新匹配不到行。敏感 URL 收口在导出侧。
         # [FIXED & MODIFIED] v2.6.4 UPSERT 重置 pending：原 INSERT OR IGNORE 导致历史 completed/failed
-        # 记录阻塞重下（机主空文件夹根因之一：误标 completed 后视频永远不再下载）
+        # 记录阻塞重下（用户空文件夹根因之一：误标 completed 后视频永远不再下载）
         #
         # [v6 修复·真机实测发现] 但"无条件重置"有副作用：**同一个 URL 在一次任务里被入队两次**
         # 时（B站种子的"双通道"——`crawler` 种子路径与 `page_processor` 页面路径**各入队一次**），

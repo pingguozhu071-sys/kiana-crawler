@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""[v2.19.9] `tools/` 脚本的**默认安全**隔离：不弹窗、不写机主真实数据根。
+"""[v2.19.9] `tools/` 脚本的**默认安全**隔离：不弹窗、不写用户真实数据根。
 
 ## 为什么必须是"默认"
 
@@ -12,7 +12,7 @@
 ⇒ 所以本文件钉三件事：
   ① 那 5 个脚本**都**在 `import launcher_*` **之前**调用了 `activate()`；
   ② `activate()` 的**默认**行为真的把数据根搬进临时目录（含 `CONFIG_FILE` 与
-     `data_root()` 两个钩子），并且**不碰**机主的真实值；
+     `data_root()` 两个钩子），并且**不碰**用户的真实值；
   ③ 逃生舱 `--real` 存在且在帮助文本里写明了风险。
 
 ⚠️ 本文件**不运行任何 `tools/` 脚本**（它们会弹窗），只做 AST 断言与纯逻辑调用。
@@ -92,7 +92,7 @@ class TestWantReal:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 2. 默认模式：真的把数据根搬走，而且不碰机主的真实值
+# 2. 默认模式：真的把数据根搬走，而且不碰用户的真实值
 # ══════════════════════════════════════════════════════════════════════
 class TestDefaultRedirectsTheDataRoot:
     def test_returns_a_temp_root_and_leaves_the_real_one_untouched(self, iso, monkeypatch):
@@ -138,7 +138,7 @@ class TestDefaultRedirectsTheDataRoot:
         assert a == b, "第二次 activate() 又造了一个新的隔离根"
 
     def test_clears_inherited_cookie_and_portable_vars(self, iso, monkeypatch):
-        """不许继承机主的 cookies 来源（否则脚本会拿真登录态去真爬），
+        """不许继承用户的 cookies 来源（否则脚本会拿真登录态去真爬），
         也不许继承 `KIANA_PORTABLE`（非冻结时它把数据根指到**仓库**里的 KianaData/，
         那是污染仓库而不是隔离）。"""
         monkeypatch.setenv("LOCALAPPDATA", str(ROOT / "_fake_real_localappdata"))
@@ -248,7 +248,7 @@ class TestScriptsActivateBeforeTouchingLauncher:
     @pytest.mark.parametrize("name", ISOLATED_SCRIPTS)
     def test_activate_precedes_every_launcher_touch(self, name):
         """**顺序就是全部**：`launcher_v8.CONFIG_FILE` 是**导入期**求值的模块常量 ——
-        导入之后再改环境变量，它早就固化到机主真路径上了，隔离等于白做。"""
+        导入之后再改环境变量，它早就固化到用户真路径上了，隔离等于白做。"""
         tree = _parse(name)
         line = _activate_line(tree)
         later = _launcher_import_lines(tree) + _window_construction_lines(tree) \
@@ -288,7 +288,7 @@ class TestScriptsActivateBeforeTouchingLauncher:
                 offenders.append(f"{p.name}(顺序反了)")
         assert not offenders, (
             "这些 tools/ 脚本会碰 launcher 却没有先做默认隔离："
-            f"{offenders} —— 它们会读写机主真实的 launcher_config.json / secrets/ / "
+            f"{offenders} —— 它们会读写用户真实的 launcher_config.json / secrets/ / "
             "http_cache/。照 tools/_tools_isolation.py 的用法在最顶上加 activate()。")
 
     def test_the_helper_stays_importable_without_qt(self):
@@ -310,7 +310,7 @@ class TestScriptsActivateBeforeTouchingLauncher:
 # 5. 端到端：**另起一个真进程**，看它到底往哪儿写（含反证）
 #
 #    前面全是 AST 与纯逻辑。这一组回答的是本轮唯一真正的问题：
-#    「把 `activate()` 那一行加上，机主的真实数据根**是不是真的**一个字节都不动？」
+#    「把 `activate()` 那一行加上，用户的真实数据根**是不是真的**一个字节都不动？」
 #
 #    ⚠️ 用**子进程**而不是进程内，是因为"导入期求值的模块常量"这件事只有在
 #    全新解释器里才复现得出来（进程内 `launcher_v8` 早被 conftest 打过桩了）。
@@ -318,13 +318,13 @@ class TestScriptsActivateBeforeTouchingLauncher:
 # ══════════════════════════════════════════════════════════════════════
 
 # 子进程要跑的代码：假装自己是 `tools/` 下的一个探针脚本。
-# FAKE_REAL 扮演"机主的真实 LOCALAPPDATA"；WITH_ISOLATION 决定加不加那一行。
+# FAKE_REAL 扮演"用户的真实 LOCALAPPDATA"；WITH_ISOLATION 决定加不加那一行。
 _E2E_PROBE = r'''
 import json, os, sys
 REPO, FAKE_REAL, WITH_ISO = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
 sys.path.insert(0, os.path.join(REPO, "tools"))
 sys.path.insert(0, REPO)
-os.environ["LOCALAPPDATA"] = FAKE_REAL          # 扮演机主的真实数据根
+os.environ["LOCALAPPDATA"] = FAKE_REAL          # 扮演用户的真实数据根
 
 isolated_root = None
 if WITH_ISO:
@@ -380,20 +380,20 @@ class TestEndToEndIsolation:
 
     def test_counterfactual_without_isolation_it_really_writes(self, tmp_path):
         """反证（**没有它，下面那条测试毫无意义**）：不加隔离时，
-        `launcher_v8.CONFIG_FILE` 就是机主真路径，保存配置真的落在那儿。"""
+        `launcher_v8.CONFIG_FILE` 就是用户真路径，保存配置真的落在那儿。"""
         fake_real = tmp_path / "FakeRealLocalAppData"
         fake_real.mkdir()
         info = _run_e2e_probe(fake_real, with_isolation=False)
         assert info["isolated_root"] == "", "没加隔离却报告了隔离根"
         assert pathlib.Path(info["config_file"]).is_relative_to(fake_real), \
-            f"不加隔离时配置竟然没落在'机主'目录里：{info['config_file']}"
+            f"不加隔离时配置竟然没落在'用户'目录里：{info['config_file']}"
         assert (fake_real / "KianaVnextPlus" / "launcher_config.json").exists(), \
             "反证失败：这段代码根本没写 —— 那下面的隔离测试就是安慰剂"
         assert (fake_real / "KianaVnextPlus" / "http_cache").is_dir(), \
             "反证失败：http_cache 没建出来（说明写入面不止配置一个）"
 
     def test_with_isolation_the_real_root_is_untouched(self, tmp_path):
-        """正题：加一行 `activate()` 之后，那个"机主目录"**一个条目都不许多**。
+        """正题：加一行 `activate()` 之后，那个"用户目录"**一个条目都不许多**。
 
         比文件指纹更严：连**目录结构**都不能变（`mkdir` 不改任何文件的 mtime，
         只比文件指纹会漏掉"用默认 root 建了个目录"这种情况）。
@@ -413,10 +413,10 @@ class TestEndToEndIsolation:
                 f"data_root()（调用期）没落在隔离根里：{info['data_root']}"
             assert pathlib.Path(info["config_file"]).is_relative_to(
                 root / "LocalAppData" / "KianaVnextPlus")
-            # ② 假"机主目录"的结构**一个条目都没多**
+            # ② 假"用户目录"的结构**一个条目都没多**
             after = sorted(p.name for p in fake_real.iterdir())
             assert after == before, (
-                f"隔离模式下机主目录还是被动了：{before} → {after}。"
+                f"隔离模式下用户目录还是被动了：{before} → {after}。"
                 f"（只比文件指纹会漏掉 mkdir —— 所以这里比的是**条目集合**）")
             # ③ 隔离根里确实写进去了（否则"没动"可能只是因为什么都没做）
             assert (root / "LocalAppData" / "KianaVnextPlus"

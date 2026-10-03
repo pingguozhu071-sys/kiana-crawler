@@ -1,7 +1,7 @@
 """v9 引擎桥真爬验收：移屏外跑 1 页真实爬取，断言日志回传/统计卡跳动/停止语义
 
 [v2.19.9] 加**默认隔离**：本脚本原先靠 `move(-2600,-1600)` 只躲开了**视线**。
-它的链路会真投机主数据 —— `start_btn.click()` → `_start()` → `save_config()`
+它的链路会真投用户数据 —— `start_btn.click()` → `_start()` → `save_config()`
 写真 `launcher_config.json`，再 → `EngineBridge.start()` → 真 `http_cache/`，
 而且 Cookies 框里灌的是从真配置读来的 `cookie_file`。
 现在默认把数据根重定向到临时目录（`LOCALAPPDATA`，导入期/调用期两个钩子一起改），

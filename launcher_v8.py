@@ -773,7 +773,7 @@ class KianaV8(QMainWindow):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(20)
         # [FIXED & MODIFIED] v2.10.4 隐身状态卡：引擎已移除代理自动探测（端口 7897 误报坏代理）
-        # → 一律直连模式；机主要隐身自行开全局代理（TUN），引擎无需感知
+        # → 一律直连模式；用户要隐身自行开全局代理（TUN），引擎无需感知
         stealth_card, sl = make_card("隐身状态", "引擎直连模式（隐身请自行开启全局代理）")
         lay.addWidget(stealth_card)
         srow = QHBoxLayout()
@@ -825,7 +825,7 @@ class KianaV8(QMainWindow):
         browse.clicked.connect(self._browse)
         row.addWidget(browse)
         cl.addLayout(row)
-        # [FIXED & MODIFIED] v2.5.1 B站会员 Cookie 文件——首页直接可设置（原仅抽屉内，机主反馈找不到）
+        # [FIXED & MODIFIED] v2.5.1 B站会员 Cookie 文件——首页直接可设置（原仅抽屉内，用户反馈找不到）
         crow = QHBoxLayout()
         crow.setSpacing(16)
         crow.addWidget(QLabel("B站会员Cookie"))
@@ -856,7 +856,7 @@ class KianaV8(QMainWindow):
         self.chk_image = QCheckBox("下载图片")
         self.chk_audio = QCheckBox("下载音频")
         self.chk_sanitize = QCheckBox("内容脱敏")
-        # [FIXED & MODIFIED] 视频/图片默认勾选（机主期望给链接就下载；原默认 False 导致"只有标题"）
+        # [FIXED & MODIFIED] 视频/图片默认勾选（用户期望给链接就下载；原默认 False 导致"只有标题"）
         self.chk_video.setChecked(bool(self.config.get("dl_video", True)))
         self.chk_image.setChecked(bool(self.config.get("dl_image", True)))
         self.chk_audio.setChecked(bool(self.config.get("dl_audio", False)))
@@ -991,7 +991,7 @@ class KianaV8(QMainWindow):
         self.accent_combo.setCurrentText(self.accent_name)
         self.accent_combo.currentTextChanged.connect(self._set_accent)
         lay.addWidget(self.accent_combo)
-        # [FIXED & MODIFIED] v2.5.3 B站会员 Cookie（设置抽屉 + 首页双入口，机主明确要求设置内可配）
+        # [FIXED & MODIFIED] v2.5.3 B站会员 Cookie（设置抽屉 + 首页双入口，用户明确要求设置内可配）
         sec = QLabel("B站会员")
         sec.setObjectName("SectionTitle")
         lay.addWidget(sec)
@@ -1183,7 +1183,7 @@ class KianaV8(QMainWindow):
     def _start(self):
         # [FIXED & MODIFIED] v2.10.5c cookies 登录态自检（爬取开始前提示密钥是否有效）
         self._check_cookies()
-        # [FIXED & MODIFIED] v2.6.0 URL 清洗：机主常从微信/文档复制分享文本整段粘贴
+        # [FIXED & MODIFIED] v2.6.0 URL 清洗：用户常从微信/文档复制分享文本整段粘贴
         # （"【标题】https://xxx?tk=..." 混合行）——正则提取每行的 http(s) URL，剥掉中文/标点尾巴
         import re as _re
         urls = []
@@ -1303,7 +1303,7 @@ class KianaV8(QMainWindow):
             self._toast("引擎加载失败 (exit=3)——请重装或检查安装包", self.T["danger"])
         else:
             self._toast("爬取完成", self.T["success"])
-        # [FIXED & MODIFIED] v2.5.9 完成后自动打开产物目录——机主反馈"空文件夹"根因：
+        # [FIXED & MODIFIED] v2.5.9 完成后自动打开产物目录——用户反馈"空文件夹"根因：
         # 产物按域名分类在 export/域名/ 子目录，顶层无文件被误判为爬取失败。
         # [FIXED & MODIFIED] v2.5.9 延迟 8s 打开：视频 worker 异步收尾，立即打开 videos 可能还空
         if rc == 0:

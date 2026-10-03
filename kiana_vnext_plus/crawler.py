@@ -215,7 +215,7 @@ class Crawler:
             impersonate=self.cfg.protocol_engine_impersonate,
             session_pool=self.session_pool,
             # [FIXED & MODIFIED] v2.10.5 P2-13 接线 max_retries（config"max_retries":5 是死配置，
-            # ProtocolEngine 一直用默认 3）——机主激进风格可配到 5
+            # ProtocolEngine 一直用默认 3）——用户激进风格可配到 5
             max_retries=self.cfg.get("max_retries", 3),
         )
 
@@ -385,7 +385,7 @@ class Crawler:
     def _init_enhancements(self):
         # [FIXED & MODIFIED] IntelligentParser 已移除（LLM 模块删除的连带——死代码，从不被调用）
         self.ai_parser = None
-        # [FIXED & MODIFIED] LLM 增强器已整体移除（国内网络延迟 300-500ms/超时阻塞每页处理，机主确认删除）
+        # [FIXED & MODIFIED] LLM 增强器已整体移除（国内网络延迟 300-500ms/超时阻塞每页处理，用户确认删除）
         self._llm_enhancer = None
         # P0 Ultimate Core v4
         from .ultimate_core_v4 import (AutoscaledPool, FullSourceExtractor)
@@ -625,9 +625,9 @@ class Crawler:
         await self.protocol.init()
         # [FIXED & MODIFIED] v2.10.4 隐身模块移除：不再自动探测/注入 127.0.0.1:7897 代理
         # ——端口探测误报（本机其他软件占用 7897 时误判 SakuraCat 已开启）导致没开 VPN
-        # 也走坏代理 → 大量失败重试。现在一律直连：机主要隐身时自行开启全局代理（TUN
+        # 也走坏代理 → 大量失败重试。现在一律直连：用户要隐身时自行开启全局代理（TUN
         # 全局路由），引擎无需感知代理存在。
-        logger.info("隐身旁路：引擎直连模式（隐身请由机主自行开启全局代理）")
+        logger.info("隐身旁路：引擎直连模式（隐身请由用户自行开启全局代理）")
         # 智能解析器会话初始化（异步）
         if getattr(self, 'ai_parser', None):
             pass  # [FIXED & MODIFIED] ai_parser 已移除（原 init 调用于此删除）
@@ -784,7 +784,7 @@ class Crawler:
                 logger.info(f"LLM 链接打分: {len(_llm_seed_scores)} 条（预算 {_m}）")
             except Exception as e:
                 logger.warning(f"LLM 链接打分失败（降级默认打分）: {e}")
-        # [FIXED & MODIFIED] v2.6.2 种子类型检测（机主直链输入的核心通道——任意直链自动分流）：
+        # [FIXED & MODIFIED] v2.6.2 种子类型检测（用户直链输入的核心通道——任意直链自动分流）：
         #   视频/音频/m3u8 → yt-dlp；图片 → 图片通道；其他文件(pdf/zip等) → 文件通道
         #   未识别的普通 URL → 正常爬取解析（全方位数据采集本职）
         _MEDIA_EXT = ('.mp4', '.mkv', '.webm', '.mov', '.avi', '.flv', '.ts',
@@ -809,13 +809,13 @@ class Crawler:
             is_file = any(_u.rstrip('/').endswith(ext) for ext in _FILE_EXT)
             # [FIXED & MODIFIED] v2.9.2 B站视频页种子直连下载：bilibili.com/video/BVxxx 直接
             # 入 yt-dlp 队列（自带 B站 extractor + cookies → 最高画质）——完全不 fetch 页面，
-            # 绕过 GeeTest 风控（机主 GUI 实测：B站视频页走页面解析 → 美国代理 IP 触发
+            # 绕过 GeeTest 风控（用户 GUI 实测：B站视频页走页面解析 → 美国代理 IP 触发
             # geetest 挑战 → 0 pages。直连 + 跳过解析 = 视频页唯一正确链路）
             # [FIXED & MODIFIED] v2.10.0 番剧修复：bilibili.com/bangumi/play/ep 也直连入队
-            # （机主 GUI 输番剧链接爬不到——原检测只认 /video/——番剧走页面解析必风控失败）
+            # （用户 GUI 输番剧链接爬不到——原检测只认 /video/——番剧走页面解析必风控失败）
             # [FIXED & MODIFIED] v2.10.1 多平台视频检测：不再只认 B站——抖音/快手/小红书/
             # YouTube/腾讯/爱奇艺/优酷/西瓜/微博视频等常见平台链接直接入 yt-dlp 队列
-            # （yt-dlp 原生支持 1000+ 站点——机主"只能爬 B站"根因就是检测只认 B站）
+            # （yt-dlp 原生支持 1000+ 站点——用户"只能爬 B站"根因就是检测只认 B站）
             # [FIXED & MODIFIED] v2.10.2 全平台扩充：全流媒体/全多媒体平台（音视频全覆盖）
             is_bili_video = ('bilibili.com/video/' in _u) or ('bilibili.com/bangumi/' in _u) or \
                             ('b23.tv/' in _u and ('BV' in _u or 'ep' in _u)) or \
@@ -932,10 +932,10 @@ class Crawler:
             if is_video_platform:
                 # [FIXED & MODIFIED] v2.10.2 视频平台页双通道：视频入下载队列（yt-dlp）
                 # + 页面继续入解析队列（封面/标题/简介/相关推荐链接/图片全采集）——
-                # 机主实测"B站链接只有视频没封面/相关链接"根因：v2.9.2 直连下载跳过了
+                # 用户实测"B站链接只有视频没封面/相关链接"根因：v2.9.2 直连下载跳过了
                 # 页面解析。国内站直连规则已保证 B站页面 fetch 不走代理（无 GeeTest）
                 #
-                # [v6 修复·机主实测发现] 原此处**没有 `_dl_video` 守卫** —— 于是
+                # [v6 修复·用户实测发现] 原此处**没有 `_dl_video` 守卫** —— 于是
                 # `--no-video` / GUI 关掉视频下载时，**种子这条捷径照样下视频**：
                 # 实测跑一个 B站种子，明传 `--no-video`，仍产出 126MB 的 mp4。
                 # 页面解析通道不受影响（封面/标题/相关链接照收），只跳过视频入队。
@@ -1140,7 +1140,7 @@ class Crawler:
         except asyncio.CancelledError:
             logger.info("Cancelled")
         finally:
-            # [FIXED & MODIFIED] v2.6.4 等视频 worker 收尾——机主"空文件夹"真正的根因：
+            # [FIXED & MODIFIED] v2.6.4 等视频 worker 收尾——用户"空文件夹"真正的根因：
             # 页面少时主循环立即 break → shutdown 杀 worker → pending 视频从未下载
             # （vxQTGNB 成功是因为页面多时 worker 轮询期间恰好下载完成，纯运气）
             try:
@@ -1262,7 +1262,7 @@ class Crawler:
             # （真机就是那个 46 字节错误页），它会拿**之前下过的别的视频**当本次成果：
             #   · 记 `completed`、file_size 记的是别人的大小；
             #   · 日志刷同一行 `视频下载完成: 021edaa56c4c.mp4 (146.0MB)` 十几次
-            #     —— 机主日志里就是这个症状，而每个"完成"其实都没下成。
+            #     —— 用户日志里就是这个症状，而每个"完成"其实都没下成。
             # 这是**假成功**：比失败更坏，因为它让用户以为东西下好了。
             try:
                 _pristine = set(_vdir.rglob("*"))
@@ -1404,7 +1404,7 @@ class Crawler:
             return
         self._shutdown_done = True
         self._should_stop = True
-        # 恢复原电源计划（爬虫结束后机主日常设置不受影响）
+        # 恢复原电源计划（爬虫结束后用户日常设置不受影响）
         try:
             from .win32_native import restore_power_plan
             restore_power_plan(getattr(self, '_orig_power_plan', None))
