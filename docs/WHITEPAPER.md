@@ -65,7 +65,7 @@ The single-machine envelope is a product decision, not a capability gap: it buys
 | Dependencies | 25 runtime + 6 development, all pinned with `==` |
 | Site rules | 14 declarative YAML files — 12 production rules, each shipping a real-page sample, plus 2 templates |
 | Storage | SQLite · 10 tables (8 queue + 2 export) plus one FTS5 index · idempotent migrations via `PRAGMA user_version` (schema version 6) |
-| Deliverable | two executables (PyInstaller onedir) + NSIS multilingual installer · measured ≈542 MB |
+| Deliverable | two executables (PyInstaller onedir) + NSIS multilingual installer · measured ≈622 MB |
 
 The installer size is a deliberate trade: Chromium, ffmpeg, the PO-Token Node service and the deno runtime all ship inside the package, so a fresh install runs with zero runtime downloads. `docs/BUILD.md` records the ≈1.8 GB installed footprint. The cost is paid by every download of the installer and by a release pipeline that must verify the bundled components; the benefit is that the first crawl behaves like the thousandth. The two executables divide the work: `KianaLauncher` is the five-page shell with the engine in-process, and `KianaCrawler` is the command-line form for scripted or unattended runs. Both share one engine package, and the difference is confined to the control surface — command-line arguments and GUI settings translate into the same engine configuration.
 
@@ -284,7 +284,7 @@ The table below consolidates the quantitative statements of this document. Conve
 | Redaction | 19 parameter classes · depth 6 | `sanitizer.py` |
 | Domestic direct-connect list | 63 raw / 59 unique | `exit_manager.py` |
 | Release gate | 14 checks; static baseline 80/99, F-class 42 | `tools/release_check.py` |
-| Deliverable | two executables + NSIS installer · 542 MB | built artifacts |
+| Deliverable | two executables + NSIS installer · 622 MB | built artifacts |
 | Exit-code contract | 0 completed / 1 stopped / 2 crash / 3 load failure | `launcher_v9.py` |
 | Installer language IDs | 8 | `tools/installer_matrix.py` |
 | Known vulnerabilities | none (pip-audit) | measured 2026-09 |
@@ -293,7 +293,7 @@ The table below consolidates the quantitative statements of this document. Conve
 
 ## 7. Limits and open items
 
-Stated plainly: (1) some platform resolvers carry **offline-only evidence**; there is no end-to-end verification against the live services, and without a login session they degrade to readable errors rather than workarounds. The live regression line (gate check 9) is the mitigation, and it records unavailability as SKIP rather than as success. (2) A few live-site resolvers currently **fail with unisolated causes**; until isolated they remain open items, not asserted as platform changes, and the `errors` subcommand is what supplies evidence for isolating them. (3) The installer is **542 MB** — the price of zero runtime downloads (§2.1); the mitigation is a single delivery plus a uninstaller that cleans up in three branches (§5.4), not a smaller package. (4) Coverage is **reported, not enforced**: CI publishes a coverage report and no threshold is configured. The reason is that this suite's primary source is incident regression rather than line coverage, so line coverage is not a valid quality signal at this stage. (5) Large-model features are off by default. (6) **Single maintainer** is a fact of the project: the fourteen checks and the locked baselines are engineering responses to that reality, not a denial of it, and every mechanism and pitfall is written down in-repository (this document, `docs/ARCHITECTURE.md`, `docs/BUILD.md`, `tools/`) so that handover does not depend on one person's memory.
+Stated plainly: (1) some platform resolvers carry **offline-only evidence**; there is no end-to-end verification against the live services, and without a login session they degrade to readable errors rather than workarounds. The live regression line (gate check 9) is the mitigation, and it records unavailability as SKIP rather than as success. (2) A few live-site resolvers currently **fail with unisolated causes**; until isolated they remain open items, not asserted as platform changes, and the `errors` subcommand is what supplies evidence for isolating them. (3) The installer is **622 MB** — the price of zero runtime downloads (§2.1); the mitigation is a single delivery plus a uninstaller that cleans up in three branches (§5.4), not a smaller package. (4) Coverage is **reported, not enforced**: CI publishes a coverage report and no threshold is configured. The reason is that this suite's primary source is incident regression rather than line coverage, so line coverage is not a valid quality signal at this stage. (5) Large-model features are off by default. (6) **Single maintainer** is a fact of the project: the fourteen checks and the locked baselines are engineering responses to that reality, not a denial of it, and every mechanism and pitfall is written down in-repository (this document, `docs/ARCHITECTURE.md`, `docs/BUILD.md`, `tools/`) so that handover does not depend on one person's memory.
 
 ---
 
@@ -339,7 +339,7 @@ Every command below was executed against the working tree this document describe
 | 14 gate checks / baselines 80, 99, 42 | `grep -c 'checks.append((' tools/release_check.py` → 14 · `grep -n 'RUFF_MAX, MYPY_MAX = 80, 99' tools/release_check.py` → `RUFF_MAX, MYPY_MAX = 80, 99` · `grep -n 'TOOLS_F_MAX = 42' tools/release_check.py` → `TOOLS_F_MAX = 42` |
 | Exit-code contract 0/1/2/3 | `grep -n 'rc == ' launcher_v9.py` → `rc == 2`, `rc == 1`, `rc == 3`, `rc == 0` in the completion handler |
 | 17 pipeline stages | `sed -n '143,145p' README.md \| tr '→' '\n' \| grep -c '[a-z]'` → 17 |
-| 542 MB installer | `du -m KianaVnextPlus-Setup-*.exe` → 542 per installer (raw sizes 541.2–541.5 MiB) |
+| 622 MB installer | `du -m KianaVnextPlus-Setup-*.exe` → 622 per installer (raw sizes 622.3 MiB) |
 | 8 installer language IDs | `grep -n 'LANG_IDS = ' tools/installer_matrix.py` → `LANG_IDS = [2057, 1033, 2052, 1028, 3076, 1041, 1042, 1036]` |
 | Seven-stage build script | `grep -oE '\[[0-9][a-d]?/7\]' 一键构建.bat \| sort -u` → 1/7 … 7/7 plus 4b/4c/4d |
 | Coverage reported, not enforced | `.github/workflows/ci.yml` runs a coverage report step with no threshold; `pyproject.toml` configures none |

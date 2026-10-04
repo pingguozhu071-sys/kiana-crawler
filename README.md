@@ -49,7 +49,7 @@ The design is organized around four problems rather than around site coverage:
 | Concurrency | Single-process asyncio · three-level cap — global / per domain / per exit node, **the minimum wins**: global host-adaptive `max(8, min(32, 2 × cores))` · **20** per domain · **10** per exit node |
 | Queue | Engine queue DB (`frontier.py`, SQLite): **8 tables**; the separate export-snapshot DB (`enhancements.py`) adds **2 tables + 1 FTS5 index** · versioned migrations (`PRAGMA user_version`, schema **v6**) |
 | Release gate | **14 checks**, any failure blocks the release |
-| Deliverable | Two exes (PyInstaller onedir) + NSIS multilingual installer · ~542 MB |
+| Deliverable | Two exes (PyInstaller onedir) + NSIS multilingual installer · ~622 MB |
 
 ---
 
@@ -193,7 +193,7 @@ Known limitations are stated explicitly, including the ones that remain open.
 
 - Some platform resolvers are **verified only by offline tests**; there is no end-to-end evidence against the live service. Without a login session they degrade honestly — a readable reason instead of a forced workaround.
 - A few live-site resolvers currently fail. The cause has not been isolated, so this is an open item rather than a proven platform-side change.
-- The installer is large (~542 MB) — browser binaries ship inside, buying "install and run" with no runtime download.
+- The installer is large (~622 MB) — browser binaries ship inside, buying "install and run" with no runtime download.
 - Coverage is reported but not enforced as a threshold; LLM-assisted features are off by default.
 
 **In one line**: it reliably collects publicly accessible content; it is not a tool for reaching content behind account permissions or payment.
