@@ -358,8 +358,24 @@ class ProtocolEngine:
 
             except Exception as e:
                 last_error = e
-                logger.warning(f"Fetch attempt {attempt+1} failed for {url}: {e}")
-                if attempt >= self.max_retries:
+                # [v2.19.10 修复·真机 24 分钟的主因] 按错误类型决定"还敢不敢再试"。
+                # 连不通的域名（DNS 解析失败 / 已等满一次超时）走满 6 次是纯浪费 ——
+                # 真机实测十几个这样的 URL 就把一次几分钟的抓取拖成了 1463 秒。
+                _kind, _cap, _why = self.classify_fetch_error(e)
+                _allowed = self.max_retries if _cap is None else min(self.max_retries, _cap)
+                if _kind == "other":
+                    logger.warning(f"Fetch attempt {attempt+1} failed for {url}: {e}")
+                else:
+                    logger.warning(
+                        f"Fetch attempt {attempt+1} failed for {url}: {e}"
+                        f" — {_why}（这类错误重试上限 {_allowed}，引擎默认 {self.max_retries}）")
+                if attempt >= _allowed:
+                    if _allowed < self.max_retries:
+                        # 提前放弃必须**说出来**：静默地少试几次 = 静默改变行为（本工程禁止）
+                        logger.warning(
+                            f"提前放弃重试 {url}：{_why}；剩余 "
+                            f"{self.max_retries - attempt} 次不再尝试 —— "
+                            f"该 URL 仍会**如实记为失败**（不是跳过，也不静默）")
                     break
                 continue
 
@@ -368,6 +384,41 @@ class ProtocolEngine:
             return last_response
         logger.error(f"All retries exhausted for {url}: {last_error}")
         return ResponseAdapter(599, url, {}, raw_text="")
+
+    @staticmethod
+    def classify_fetch_error(exc: BaseException) -> tuple:
+        """[v2.19.10 新增] 按错误类型决定"这个 URL 还值不值得再试"。
+
+        真机证据（2026-10-04，打包版一次 150 页抓取耗时 **1463 秒**）：`fail=46` 里有十几个是
+        **根本连不通**的外国域名（`schema.org` / `support.google.com` / `twitter.com` /
+        `mastodon.social` / `open.spotify.com` / `ai.google` / `chromium-review.googlesource.com` …），
+        每个都走满 **6 次重试 × 每次约 21 秒超时**，把一次本来几分钟的抓取拖成了 24 分钟。
+
+        返回 `(kind, 允许的重试上限, 人话原因)`；`允许的重试上限` 为 `None` 表示"沿用引擎默认值"。
+
+        ⚠️ 刻意**不**把重试次数一刀切降下来 —— 那会让**真正瞬时抖动**的站点也失败
+           （等于用可靠性换时间）。这里只区分两类：
+             · **再试也没用**（DNS 解析不了、连接被拒、已等满一次超时）→ 少试几次；
+             · **可能只是抖动**（连接被重置、TLS 中断）→ **保留完整重试**。
+        """
+        low = f"{type(exc).__name__}: {exc}".lower()
+        # ① DNS 解析不了 / 域名不存在 —— 不是瞬时故障，试第二次的收益接近零
+        if ("could not resolve host" in low or "curl: (6)" in low
+                or "name or service not known" in low or "nodename nor servname" in low
+                or "getaddrinfo failed" in low):
+            return ("dns", 1, "DNS 解析失败（不是瞬时故障，重试无收益）")
+        # ② 连接/读取超时 —— 已经等满一次 20+ 秒仍不通，说明这条出口到那里就是不通
+        if "curl: (28)" in low or "timed out" in low or "timeout" in low:
+            return ("timeout", 1, "连接超时（已等满一次超时，重试收益很低）")
+        # ③ 连接被拒绝 / 不可达
+        if "curl: (7)" in low or "connection refused" in low or "failed to connect" in low:
+            return ("unreachable", 1, "连接被拒绝/不可达（不是瞬时故障）")
+        # ④ 连接被重置 / TLS 中断 —— 常见于限流与网络抖动 ⇒ **保留完整重试**
+        if ("curl: (35)" in low or "recv failure" in low or "connection reset" in low
+                or "connection aborted" in low or "connection closed" in low
+                or "eof occurred" in low):
+            return ("reset", None, "连接被重置（可能是瞬时抖动，保留完整重试）")
+        return ("other", None, "")
 
     async def _fetch_aiohttp(self, url: str, proxy: Optional[str],
                              headers: dict, method: str = "GET",

@@ -59,7 +59,7 @@
 
 | 构成 | 规模 |
 |---|---|
-| 引擎（`kiana_vnext_plus/`） | 71 个 Python 模块，27,361 行 |
+| 引擎（`kiana_vnext_plus/`） | 71 个 Python 模块，27,620 行 |
 | 桌面界面（`launcher_v9.py`） | 3,652 行，PySide6/qfluentwidgets 五页 FluentWindow |
 | 测试 | 约 1,490 个用例，全部离线 |
 | 依赖 | 运行时 25 条 + 开发 6 条，全部 `==` 钉死版本 |
@@ -270,7 +270,7 @@ Windows 上另有两类静默失败，各有固定解法，因为两者都不抛
 
 | 度量 | 值 | 出处 |
 |---|---|---|
-| 引擎模块 / 行数 | 71 / 27,361 | `kiana_vnext_plus/*.py` |
+| 引擎模块 / 行数 | 71 / 27,620 | `kiana_vnext_plus/*.py` |
 | 桌面界面 | 3,652 行 · 5 页 | `launcher_v9.py` |
 | 测试 | 约 1,490 个用例（1,483 个测试函数） | `tests/` |
 | 依赖 | 25 运行时 + 6 开发，全钉死 | 两份 requirements |
@@ -328,7 +328,7 @@ kiana-crawler 的工程价值不在于功能清单的长度，而在于**每个�
 
 | 陈述 | 复核方式 |
 |---|---|
-| 71 模块 / 27,361 行 | `ls kiana_vnext_plus/*.py \| wc -l` → 71 · `wc -l kiana_vnext_plus/*.py \| tail -1` → `27361 total` |
+| 71 模块 / 27,620 行 | `ls kiana_vnext_plus/*.py \| wc -l` → 71 · `wc -l kiana_vnext_plus/*.py \| tail -1` → `27361 total` |
 | 界面 3,652 行 / 五页 | `wc -l launcher_v9.py` → 3652 · `grep -c 'addSubInterface(self\.' launcher_v9.py` → 5 |
 | 约 1,490 个用例 | `grep -rhE '^[[:space:]]*(async )?def test_' tests \| wc -l` → 1,483 个测试函数；`grep -rn '@pytest.mark.parametrize' tests` → 3 个装饰器，参数个数为 2、5、5，故收集总数为 1,492 |
 | 25 + 6 条钉死依赖 | `grep -cE '^[A-Za-z0-9_.-]+==' kiana_vnext_plus/requirements.txt requirements-dev.txt` → 25 与 6 |

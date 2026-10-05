@@ -13,6 +13,18 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 import aiofiles
+
+
+def is_bilibili_url(url: str) -> bool:
+    """[v2.19.10 新增] 这个 URL 是不是 B站 的？
+
+    抽成模块级函数是为了**可测**：原判断内联在一个几百行的下载方法里，
+    修「B站 结论串台到别的域名」时根本没法写回归测试。
+    只认精确后缀（不认子串）—— 「子串冒充域名归属」是本工程踩过的坑。
+    """
+    host = (urlparse(url).netloc or "").lower()
+    return (host == "bilibili.com" or host.endswith(".bilibili.com")
+            or host == "b23.tv" or host.endswith(".b23.tv"))
 # [FIXED & MODIFIED] aiohttp 在本机 hostname 解析层卡死（外网全部超时，urllib/curl_cffi 正常）
 # → 图片/音频下载改用 curl_cffi（引擎主抓取已验证可用）
 
@@ -979,20 +991,34 @@ class UniversalDownloader:
                 # 但服务端回 `-101 账号未登录` → 实际只拿到 480P，日志却在报"最高画质"。
                 # 现改成**真调一次 nav 接口**核实登录态，并按事实说话。
                 cookie_browser = detect_bilibili_cookie_browser()
-                _login, _vip, _why = verify_bilibili_login()
-                if cookie_browser and _login is True:
-                    logger.warning(f"B站 cookies **登录有效**{'（大会员）' if _vip else '（非会员）'}"
-                                   f" → {'最高画质' if _vip else '登录态画质'}")
-                elif cookie_browser and _login is False:
-                    logger.error(
-                        f"⚠️ B站 cookies **已失效**（{_why}）——文件看着是好的，但服务端不认。"
-                        f"本次**只能拿到 480P 及以下**。请重新导出 cookies.txt（浏览器登录后导出）。")
-                elif cookie_browser:
-                    # 没测出来（网络等）→ **不改变行为**，措辞保守
-                    logger.warning(f"检测到 B站 cookies（登录态**未能核实**：{_why}）→ 按最高画质尝试，"
-                                   f"若实际只有 480P 说明 cookies 已失效")
+                # [v2.19.10 修复·真机日志串台] 原实现**无条件**对每个视频跑 B站 登录态探测
+                # 并打印结论。真机实测（2026-10-04）：下载 Apple / Microsoft 官网宣传片时，
+                # 日志照样打印 `B站 cookies **登录有效**（大会员） → 最高画质`
+                # —— 与正在下载的那个视频**毫无关系**，属误导性日志（会让人误判画质结论）。
+                # 现按 URL 归属分流：**非 B站 目标不探测（顺带省一次网络请求）、不打印 B站 结论**。
+                # ⚠️ `cookie_browser`（**本地文件检查，无网络开销**）保持原样：下游
+                #    `if cookie_browser:` 用它选格式链 —— 保留它 ⇒ 非 B站 站点的画质选择**零变化**，
+                #    避免在"修日志"时顺手把别的站点的画质链改掉。
+                _host = (urlparse(url).netloc or "").lower()
+                _is_bili = is_bilibili_url(url)
+                if not _is_bili:
+                    logger.debug(f"[画质] 目标非 B站（{_host}）—— 不做 B站 登录态探测、"
+                                 f"不打印 B站 结论（旧实现在这里会打「B站 cookies 登录有效」，属串台）")
                 else:
-                    logger.info("未检测到 B站 cookies → 普通画质（登录 B站后完全退出浏览器即可解锁最高画质）")
+                    _login, _vip, _why = verify_bilibili_login()
+                    if cookie_browser and _login is True:
+                        logger.warning(f"B站 cookies **登录有效**{'（大会员）' if _vip else '（非会员）'}"
+                                       f" → {'最高画质' if _vip else '登录态画质'}")
+                    elif cookie_browser and _login is False:
+                        logger.error(
+                            f"⚠️ B站 cookies **已失效**（{_why}）——文件看着是好的，但服务端不认。"
+                            f"本次**只能拿到 480P 及以下**。请重新导出 cookies.txt（浏览器登录后导出）。")
+                    elif cookie_browser:
+                        # 没测出来（网络等）→ **不改变行为**，措辞保守
+                        logger.warning(f"检测到 B站 cookies（登录态**未能核实**：{_why}）→ 按最高画质尝试，"
+                                       f"若实际只有 480P 说明 cookies 已失效")
+                    else:
+                        logger.info("未检测到 B站 cookies → 普通画质（登录 B站后完全退出浏览器即可解锁最高画质）")
                 # [FIXED & MODIFIED] v2.6.7 多级格式降级链——mp4 单文件优先（免 ffmpeg 合并，
                 # 规避 gbk 崩溃导致空文件夹）；dash 分离流+合并放最后兜底
                 # [FIXED & MODIFIED] v2.15 阶段3 B站 Hi-Res：会员时音轨优先 FLAC

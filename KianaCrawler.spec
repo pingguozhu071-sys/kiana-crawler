@@ -2,7 +2,7 @@
 import os as _os
 import shutil
 from pathlib import Path as _P
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_all
 from PyInstaller.utils.hooks import collect_submodules
 
 # [FIXED & MODIFIED] v2.14 阶段4 供应链：动态解析路径（原硬编码用户名+
@@ -42,6 +42,36 @@ if _ff and _fp:
 hiddenimports = []
 datas += collect_data_files('trafilatura')
 hiddenimports += collect_submodules('kiana_vnext_plus')
+
+# ── [v2.19.10 修复·打包版真机实测] 浏览器驱动 + 正文停用词表随包 ────────────────
+# 真机证据（2026-10-04，打包版 v2.19.9，参数 深度30/上限150）：
+#   浏览器层**整体降级 protocol-only**，日志逐字为
+#     `FileNotFoundError: [WinError 2] 系统找不到指定的文件。`
+#   抛点链：`playwright._impl._transport.connect()` → `asyncio create_subprocess_exec`
+#           → `subprocess._execute_child` ⇒ **要启动的 driver 可执行文件不存在**。
+#   安装目录实测对比（关键）：
+#       _internal\patchright\driver\   ✅ 在（110 个文件，driver 齐全）
+#       _internal\playwright\          ❌ **整个包都不在**
+#   而引擎策略是「优先 patchright，其 add_init_script 自证不通过则回退 playwright」
+#   ⇒ **回退目标不在包里 ⇒ 整层失效**：JS 渲染兜底、55 维隐身链、验证码兜底一行都不执行。
+#   ⇒ 结论：**两个包都要显式收**（含 driver 这类非 .py 数据文件），缺一不可。
+for _bp in ("patchright", "playwright"):
+    try:
+        _bd, _bb, _bh = collect_all(_bp)
+        datas += _bd
+        binaries += _bb
+        hiddenimports += _bh
+        print(f"[spec] 浏览器驱动入包: {_bp}（datas={len(_bd)} binaries={len(_bb)}）")
+    except Exception as _e:
+        print(f"[spec] !! collect_all({_bp}) 失败: {_e}")
+# justext 的停用词表：不带它会在运行时报
+#   `[WinError 3] 系统找不到指定的路径。: '...\_internal\justext\stoplists'`
+#   真机日志里刷了**数十次**（还有 `recall retry failed` 同因）⇒ 该正文提取通道整条失效。
+try:
+    datas += collect_data_files("justext")
+    print("[spec] justext 停用词表入包")
+except Exception as _e:
+    print(f"[spec] !! collect_data_files(justext) 失败: {_e}")
 
 # ── [v6] 内置第三方部件（`vendor/`）：camoufox 隐身内核 + ddddocr 验证码 ──────────
 # 用户要求"打包也打进去"——装完即用，不依赖用户自己 pip。

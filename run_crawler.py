@@ -92,6 +92,41 @@ if bp:
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", bp)
     os.environ.setdefault("PATCHRIGHT_BROWSERS_PATH", bp)
 
+def _progress_display(progress: dict, counts: dict) -> tuple:
+    """[v2.19.10 新增] 把心跳要显示的数字算出来 —— **抽成纯函数是为了可测**。
+
+    返回 `(done, failed, skipped, pending, total, pct)`。
+
+    背景（真机实测，比它要修的 bug 更值钱）：`_progress` 里的 `pending` 是**死键**
+    —— `_progress['pending']` **全仓没有任何地方自增**；`total` 也只在 `done` 增长时
+    被抬 ⇒ `pct` **恒为 100.0%**。真机那次心跳打出 `done=150 ... pend=0  100.0%`，
+    让人以为"待处理为空、活干完了"，而那一刻前沿**还有 587 行**；
+    那次排查里的**两次误判都源于这一行**。
+
+    现优先用 frontier 的**权威计数**（按 status 分组，含 `retry`），取不到才回退 `_progress`：
+      · `pending` 显示口径 = `pending + retry` —— 正是引擎主循环的退出条件"待处理 + 重试 == 0"；
+      · `total`  = 全部状态之和（真实规模，不再"只随 done 增长"）；
+      · `pct`    = `(total − 未落定) / total`，未落定 = `pending + retry + leased`
+                   ⇒ 与退出条件**同源**，跑完必然 100%，中途也不会假报 100%。
+    """
+    d = progress.get("done", 0)
+    f = progress.get("failed", 0)
+    sk = progress.get("skipped", 0)
+    pn = progress.get("pending", 0)
+    tot = progress.get("total", 0)
+    if counts:
+        d = counts.get("done", d)
+        f = counts.get("failed", f)
+        sk = counts.get("skipped", sk)
+        pn = counts.get("pending", 0) + counts.get("retry", 0)
+        tot = sum(counts.values())
+        _todo = pn + counts.get("leased", 0)
+        pct = (tot - _todo) / tot * 100 if tot else 0.0
+    else:
+        pct = d / tot * 100 if tot else 0.0
+    return d, f, sk, pn, tot, pct
+
+
 _defaults = {
     "crawl_depth": 5, "max_pages": 500,
     "download_path": str(Path.home() / "Downloads" / "KianaVnextPlus"),
@@ -324,12 +359,14 @@ async def crawl(urls, cfg, on_engine=None):
             await asyncio.sleep(1.5)
             p = getattr(c, "_progress", {})
             elapsed = time.monotonic() - t0
-            d, f2, pn = p.get("done", 0), p.get("failed", 0), p.get("pending", 0)
-            # [v6 修复·真机实测发现] `skipped` 原被并进 `fail` —— 达到页数上限跳过的任务
-            # 不是失败，却让进度条显示 "fail=19"（日志里一条错误都没有）。分开显示。
-            sk = p.get("skipped", 0)
-            tot = p.get("total", 0)
-            pct = d / tot * 100 if tot else 0
+            # 数字一律走 `_progress_display`（说明见该函数 docstring）：
+            # `_progress['pending']` 是死键、`total` 只随 done 增长 ⇒ 直接用它会让 `pct` 恒 100%。
+            # 取权威计数失败时**回退到原口径** —— 心跳挂了比数字不准更糟。
+            try:
+                _cnt = await c.frontier.get_counts()
+            except Exception:
+                _cnt = {}
+            d, f2, sk, pn, tot, pct = _progress_display(p, _cnt)
             speed = d / elapsed if elapsed > 0 else 0
             print(f"  [{elapsed:5.0f}s] {bar(pct)} {pct:5.1f}%  done={d} fail={f2} "
                   f"skip={sk} pend={pn}  {speed:.1f}p/s")

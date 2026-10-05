@@ -2,7 +2,7 @@
 import os as _os
 import shutil
 from pathlib import Path as _P
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_all
 
 # [FIXED & MODIFIED] v2.14 阶段4 供应链：动态解析路径（原硬编码用户名+
 # Python314 版本绝对路径——换机/升 Python 构建必炸）。照抄 universal_downloader
@@ -64,6 +64,29 @@ wp_binaries = []
 if _ff and _fp:
     wp_binaries = [(_ff, 'bin'), (_fp, 'bin')]
 wp_datas += collect_data_files('qfluentwidgets')
+
+# ── [v2.19.10 修复·打包版真机实测] 浏览器驱动 + 正文停用词表随包 ────────────────
+# 与 `KianaCrawler.spec` **同一处修复**（GUI 进程内也跑引擎，两边都要）：
+#   真机 v2.19.9 打包版实测：`_internal\patchright\` 在（含 driver），
+#   而 `_internal\playwright\` **整个包不在** ⇒ 引擎从 patchright 回退到 playwright 时，
+#   `playwright._impl._transport.connect()` 起 driver 抛 `FileNotFoundError [WinError 2]`
+#   ⇒ 浏览器层整体降级 protocol-only（JS 渲染兜底与 55 维隐身链全部不执行）。
+#   **两个包都要收**；driver 是非 .py 数据文件，必须靠 collect_all 才会进包。
+for _bp in ("patchright", "playwright"):
+    try:
+        _bd, _bb, _bh = collect_all(_bp)
+        wp_datas += _bd
+        wp_binaries += _bb
+        hiddenimports += _bh
+        print(f"[spec] 浏览器驱动入包: {_bp}（datas={len(_bd)} binaries={len(_bb)}）")
+    except Exception as _e:
+        print(f"[spec] !! collect_all({_bp}) 失败: {_e}")
+# justext 停用词表（不带 ⇒ 运行时 `[WinError 3] ..._internal\justext\stoplists`）
+try:
+    wp_datas += collect_data_files("justext")
+    print("[spec] justext 停用词表入包")
+except Exception as _e:
+    print(f"[spec] !! collect_data_files(justext) 失败: {_e}")
 
 # [v2.16 阶段1 可移植性] Chromium 随包（GUI 用 patchright 渲染同样需要）
 # [v2.19] 版本号改通配扫描：原硬编码 chromium-1228（浏览器升级后 spec 静默不入包，

@@ -10,6 +10,7 @@ Key/地址/模型不齐则不构建客户端（引擎侧保证）。
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -59,8 +60,25 @@ async def enrich_project(export_dir, client, task: str = "summarize",
                 meta.append((jf, idx))
         if not rows:
             return stats
+        # ── [v2.19.10 修复·真机实测发现] 这一段原本**开工无声** ────────────────────
+        # 真机证据（2026-10-04）：整次抓取 `Done in 1463s`，其中 **392.3 秒**全花在
+        # 下面这一次 await 上；期间只有心跳在刷 `done=150 ... 100.0%` 的**冻结行**
+        # ⇒ 这 392 秒**看起来像空转**，实际是 27 个文件的真增强（结果是真产物）。
+        # 那次排查的**两次误判**（先猜"在等连不通的外国域名"、后猜"在等在途页面请求"）
+        # 与这段静默直接相关。**要修的是"看不见"，不是"太久"**：
+        #   · 只补**开工一行**（行数/文件数）与**返回一行**（耗时）；
+        #   · ❌ **不加取消超时** —— 会丢产物；
+        #   · ❌ **不改成异步不等待** —— 会变成"结果没写完"的新假成功。
+        _n_files = len({str(_f) for _f, _i in meta})
+        _t_llm = time.monotonic()
+        logger.info(
+            f"LLM 增强开始：{len(rows)} 行待处理（来自 {_n_files} 个文件，任务 {task}）"
+            f"—— 此阶段是**抓取后处理**，抓取本身已结束，心跳会停在 100%，属正常")
         result = await async_llm_process_rows(client, rows, task=task,
                                               budget_month=budget_month, limit=limit)
+        logger.info(
+            f"LLM 增强批次返回：{len(rows)} 行，耗时 {time.monotonic() - _t_llm:.1f}s"
+            f"（接下来按位置回写原文件，原子替换）")
         # 按位置回写（原子：先写 .tmp 再 replace）
         by_file: dict = {}
         for (jf, idx), out_row in zip(meta, result.get("out_rows") or []):

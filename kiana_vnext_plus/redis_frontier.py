@@ -143,7 +143,8 @@ class RedisFrontier:
             await self.result_db.push(url, depth, priority,
                                       force=force, parent_hash=parent_hash)
 
-    async def pop_batch(self, limit=10, worker_id="worker1", strategy="bfs") -> List[Dict]:
+    async def pop_batch(self, limit=10, worker_id="worker1", strategy="bfs",
+                        ignore_schedule=False) -> List[Dict]:
         """[v6 修复] 补齐 `strategy` 形参。
 
         同样地，`crawler` 调用时传 `strategy=...`（bfs/dfs/bff），而本方法没有该形参
@@ -154,10 +155,20 @@ class RedisFrontier:
         priority+时间 计分的 zset）取任务，**只实现优先级/BFS 次序**，
         dfs/bff 未实现——这里**显式告警**而不是静默忽略，
         因为"参数看起来生效、实际没生效"正是本工程最忌讳的一类。
+
+        [v2.19.10] `ignore_schedule` 同理：本后端的出队是 Lua 脚本**按 zset 计分**
+        （priority+scheduled_at）取的，没有"无视排期"的取法 ⇒ **显式告警并改走 SQLite
+        记录库**那条路（frontier 的权威状态本就在 `result_db` 里，Redis 只是队列加速层），
+        而不是假装收下了这个参数。
         """
         if strategy != "bfs":
             logger.warning(f"Redis 后端暂只支持 bfs 次序，收到 strategy={strategy!r} "
                            f"——本次仍按 bfs 出队（如需 dfs/bff 请用 SQLite 后端）")
+        if ignore_schedule:
+            logger.warning("Redis 后端不支持 ignore_schedule（无视重试排期出队），"
+                           "本次撞上限排空改走 SQLite 记录库")
+            return await self.result_db.pop_batch(limit, worker_id, strategy=strategy,
+                                                  ignore_schedule=True)
         # 降级模式：直接走 SQLite
         if self._fallback_mode:
             await self._try_redis_recovery()

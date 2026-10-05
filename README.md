@@ -40,7 +40,7 @@ The design is organized around four problems rather than around site coverage:
 
 | Item | Value |
 |---|---|
-| Engine | **71 modules · 27,361 lines** |
+| Engine | **71 modules · 27,620 lines** |
 | Desktop UI | **3,652 lines** · five-page FluentWindow |
 | Tests | **≈1,490 cases** (1,483 test functions), all runnable offline |
 | Dependencies | **25** runtime + **6** dev, **all pinned with `==`** |

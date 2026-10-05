@@ -59,7 +59,7 @@ The single-machine envelope is a product decision, not a capability gap: it buys
 
 | Component | Scale |
 |---|---|
-| Engine (`kiana_vnext_plus/`) | 71 Python modules · 27,361 lines |
+| Engine (`kiana_vnext_plus/`) | 71 Python modules · 27,620 lines |
 | Desktop UI (`launcher_v9.py`) | 3,652 lines · five-page FluentWindow (PySide6 + qfluentwidgets) |
 | Tests | approximately 1,490 cases, fully offline |
 | Dependencies | 25 runtime + 6 development, all pinned with `==` |
@@ -270,7 +270,7 @@ The table below consolidates the quantitative statements of this document. Conve
 
 | Property | Value | Provenance |
 |---|---|---|
-| Engine modules / lines | 71 / 27,361 | `kiana_vnext_plus/*.py` |
+| Engine modules / lines | 71 / 27,620 | `kiana_vnext_plus/*.py` |
 | Desktop UI | 3,652 lines · 5 pages | `launcher_v9.py` |
 | Tests | ≈1,490 cases (1,483 test functions) | `tests/` |
 | Dependencies | 25 + 6, all pinned | the two requirements files |
@@ -321,7 +321,7 @@ Every command below was executed against the working tree this document describe
 
 | Claim | How to verify |
 |---|---|
-| 71 modules / 27,361 lines | `ls kiana_vnext_plus/*.py \| wc -l` → 71 · `wc -l kiana_vnext_plus/*.py \| tail -1` → `27361 total` |
+| 71 modules / 27,620 lines | `ls kiana_vnext_plus/*.py \| wc -l` → 71 · `wc -l kiana_vnext_plus/*.py \| tail -1` → `27361 total` |
 | UI 3,652 lines / five pages | `wc -l launcher_v9.py` → 3652 · `grep -c 'addSubInterface(self\.' launcher_v9.py` → 5 |
 | ≈1,490 test cases | `grep -rhE '^[[:space:]]*(async )?def test_' tests \| wc -l` → 1,483 test functions; `grep -rn '@pytest.mark.parametrize' tests` → 3 decorators, over 2, 5 and 5 inputs, so the collected total is 1,492 |
 | 25 + 6 pinned dependencies | `grep -cE '^[A-Za-z0-9_.-]+==' kiana_vnext_plus/requirements.txt requirements-dev.txt` → 25 and 6 |

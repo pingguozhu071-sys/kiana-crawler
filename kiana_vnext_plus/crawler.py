@@ -156,6 +156,23 @@ def _is_real_video_file(p) -> bool:
         return False
 
 
+# [v2.19.10 修复]「撞上限后的收尾窗口」秒数 —— 见 `Crawler._await_capped_batch`。
+# 取值理由：上限达成后取到的批次只做"超限跳过"记账（真机实测每批 50 条约 0.1~0.9 秒），
+# 15 秒已是它的 20 倍以上 ⇒ 正常批次绝不会被窗口打断；只有真的"卡在别的 await 上、
+# 再等也不可能多出一页"的任务才会撞到窗口。
+_CAP_TAIL_GRACE = 15.0
+
+
+def _cap_reached(max_pages, done) -> bool:
+    """`max_pages` 是否已达成 —— 与 `_batch_cap` 的 `room <= 0` **同一判据**。
+
+    [v2.19.10] 抽成一处，是为了让"取批"与"撞上限后的收尾"共用同一个判断：
+    两处判据一旦分叉，就会出现"取批按 A 判、收尾按 B 判"的鬼故事
+    （本工程的 "Skipped 不是 failed" 教训正是同一种分叉）。
+    """
+    return int(max_pages) - int(done) <= 0
+
+
 def _batch_cap(max_pages, done, hard_cap=50):
     """[v2.19.9] 单批取任务数的上限 —— 必须受**总页数上限**约束。
 
@@ -169,7 +186,7 @@ def _batch_cap(max_pages, done, hard_cap=50):
     `pop_batch` 恒空、`pending` 永不清零 ⇒ **又变成空转**（本工程刚修过同一形状）。
     """
     room = int(max_pages) - int(done)
-    if room <= 0:
+    if _cap_reached(max_pages, done):
         return int(hard_cap)
     return max(1, min(int(hard_cap), room))
 
@@ -1037,6 +1054,12 @@ class Crawler:
                 while self._paused and not self._should_stop:
                     await asyncio.sleep(0.5)
                 batch = None
+                # [v2.19.10 修复] 本批是不是"页数上限已达成之后"取到的 —— 判据与
+                # `_batch_cap` 的 `room <= 0` 共用 `_cap_reached`（一处判据，两处用）。
+                # 它决定两件事：① 取批要不要 `ignore_schedule`（见下）；
+                # ② 这批任务的等待要不要设收尾窗口（见 `_await_capped_batch`）。
+                _cap_at_pop = False
+                _max_pages = self.project.config.limits.max_pages
                 # [v2.18 P2-10] flusher 争 WAL 写锁时 pop_batch 偶发 "database is locked"——
                 # 旧实现直接炸出 run() 终止整场。退避重试 2 次（busy_timeout 已 30s，
                 # 这里兜的是极端并发写窗口），仍失败再抛。
@@ -1047,11 +1070,20 @@ class Crawler:
                         # 50 个任务并发启动会把使用者设的上限冲过去（最多 49 页）。
                         # 真机实测：`-m 3` 跑了 **10 页**。
                         # 语义与两个边界（额度用完**取满**、至少 1）见 `_batch_cap` docstring。
+                        _done_at_pop = await self.frontier.count_done_total()
+                        _cap_at_pop = _cap_reached(_max_pages, _done_at_pop)
+                        # [v2.19.10 修复] 上限达成后**不再等重试退避**取任务。
+                        # 为什么：那之后队列里剩下的任务，`process_job` 开头的超限判定
+                        # 会把它们**逐条记 skipped**（`_batch_cap` docstring 里的"快速排空"），
+                        # 而 `scheduled_at` 只是它们上一次失败算出的退避时间 —— 等它到期
+                        # 等来的也只是一次跳过。真机实测（2026-10-04 打包版 max_pages=150）：
+                        # 排空到最后 6 条时全是"未到期的 retry"，主循环 1 秒一轮**空转 33.8 秒**，
+                        # 期间 done 早已封顶、一页都不会多（stats.jsonl 逐批可查）。
                         batch = await self.frontier.pop_batch(
-                            _batch_cap(self.project.config.limits.max_pages,
-                                       await self.frontier.count_done_total()),
+                            _batch_cap(_max_pages, _done_at_pop),
                             worker_id=self.worker_id,
-                            strategy=getattr(self, "_crawl_strategy", "bfs"))  # [FIXED & MODIFIED] v2.10.5 P1-7 批上限 10→50（原 10 卡死 20 核并发）#[v2.17 E-P1-4] 爬行策略透传（bfs/dfs/bff）
+                            strategy=getattr(self, "_crawl_strategy", "bfs"),  # [FIXED & MODIFIED] v2.10.5 P1-7 批上限 10→50（原 10 卡死 20 核并发）#[v2.17 E-P1-4] 爬行策略透传（bfs/dfs/bff）
+                            ignore_schedule=_cap_at_pop)
                         break
                     except Exception as _pe:
                         if _attempt == 2:
@@ -1065,6 +1097,19 @@ class Crawler:
                     empty_polls += 1
                     await self.frontier.flush()  # [FIXED & MODIFIED] 空 poll 立即 flush：写队列未落库的
                     # retry/pending 任务不落库 → pop_batch 永远空 → 空转 40s（B站实测）
+                    # [v2.19.10 修复] 上限达成 + 仍取不到任务 ⇒ 剩下的**每一条都只会被判超限跳过**
+                    # （取不到只说明退避没到期），再轮询下去不可能多出一页 —— 不再空转。
+                    # flush 已在上一行跑过 ⇒ 落库的行此刻都在库里；上面的 `ignore_schedule`
+                    # 本应已经把"未到排期"的行一并取走，走到这里说明**该后端没照做**
+                    # （例如 Redis 后端的降级路径）。如实记下还剩多少条再收尾，
+                    # **不静默**（静默空转/静默丢任务都是本工程禁过的做法）。
+                    if _cap_at_pop:
+                        logger.warning(
+                            f"已达页数上限({_max_pages} 页)：队列里仍有 "
+                            f"{int(counts.get('pending', 0)) + int(counts.get('retry', 0))} 条任务"
+                            "未到重试排期 —— 它们即使到期也只会被判超限跳过，本次不再等它们，"
+                            "提前收尾（这些行留在队列，下次续爬启动即被跳过）")
+                        break
                     await asyncio.sleep(1)
                     continue
                 empty_polls = 0
@@ -1072,7 +1117,11 @@ class Crawler:
                 # [v2.17 3-A] 任务级看门狗：page_timeout>0 时单页处理超时 → kill+标 retry
                 # （防单页挂起冻住批循环；默认 0=关闭零影响）
                 _pt = _safe_int_cfg(self.cfg.get("page_timeout", 0), 0)
-                if _pt > 0:
+                if _cap_at_pop:
+                    # [v2.19.10 修复] 撞上限之后才取到的这一批：**唯一去向是"超限跳过"**，
+                    # 只能给短窗口（理由与取消的安全性见 `_await_capped_batch` docstring）。
+                    _results = await self._await_capped_batch(tasks, batch)
+                elif _pt > 0:
                     async def _guarded(task, job):
                         try:
                             await asyncio.wait_for(asyncio.shield(task), timeout=_pt)
@@ -1190,6 +1239,76 @@ class Crawler:
                                 f"skipped={_st['skipped']} files={_st['files']}")
                 except Exception as _le:
                     logger.warning(f"LLM 增强异常（忽略）: {_le}")
+
+    def _count_cap_skip(self, n: int = 1) -> None:
+        """把 n 条"撞页数上限被跳过"的任务记进进度计数器。
+
+        与 `page_processor.process_job` 那条超限分支**同一口径**（见那里的注释）：
+        记 `skipped`，**绝不记 `failed`** —— 上限是使用者自己配的、任务是主动跳过的，
+        真机教训是把这类并进 fail 会报出"fail=19 而日志里一条错误都没有"。
+        （本工程的老规矩：**移除动作是对的、标签是错的**；2026-10-04 那次真机日志里
+        `skip` 从 100 爬到 587 就是这条口径在起作用，别把它改回去。）
+        """
+        p = getattr(self, "_progress", None)
+        if p is None:
+            # run() 依赖 setup() 建好的组件，走到这里说明调用方跳过了 setup()——
+            # 行本身仍会落终端态（调用方负责），但计数没地方记，**说出来**别静默。
+            logger.warning("进度计数器未初始化（缺 setup()）：撞上限跳过的这一条只能留在日志里")
+            return
+        p['skipped'] = p.get('skipped', 0) + int(n)
+        p['total'] = max(p.get('total', 0), p.get('done', 0) + p.get('pending', 0))
+
+    async def _await_capped_batch(self, tasks, batch):
+        """[v2.19.10 修复] 等一批"页数上限达成之后才取到"的页面任务 —— 只给短窗口。
+
+        **为什么需要**：上限达成后取到的这批任务，`process_job` 的**第一件事**就是判超限
+        ⇒ 它们唯一可能的去向是 `skipped`（这就是 `_batch_cap` docstring 说的"快速排空"），
+        正常应在毫秒级返回。但 `asyncio.gather` **没有超时**：只要有一个任务挂在别的
+        await 上（库锁、罕见 IO、将来处理器里新加的等待），**整个收尾就被它拖住** ——
+        而这段时间里**不可能多出一页**（上限已封顶、前沿也已排空）。
+        真机实测（2026-10-04 打包版，max_pages=150）：上限达成后进程又跑了 433 秒
+        （其中 392.3 秒是收尾之后的 LLM 增强、33.8 秒是在等队列里 6 条未到重试排期的
+        任务），而"等页面在途请求"这件事本身在这趟里占了 0 秒 —— 换句话说：
+        **这里的每一秒都是纯等待，且没有任何产出**。
+
+        **为什么敢取消**（而不是"放弃它们继续跑"）：这批任务连超限判定都还没过，
+        **还没写任何产物** ⇒ 不存在"产物写一半"；而"放着不管"更糟 —— 孤儿协程会在
+        `_graceful_shutdown` 关掉库/会话之后继续写（v2.18 P1-2 就是为这个才要求
+        `cancel` 后必须 `await` 原任务真正退出）。所以这里取消后**仍 await 它们退出**，
+        再按**撞上限跳过**记账（`mark_failed(retry=False)` + 进度记 `skipped`）。
+
+        **唯一的例外**（防丢真产物）：窗口到期时若 `max_pages` 已被调高（GUI 可热改），
+        这批任务可能真的能产出页面 ⇒ 窗口作废，按普通批次继续等它们（宁可慢，不可丢）。
+        """
+        _grace = float(_CAP_TAIL_GRACE)
+        _done_tasks, _pending_tasks = await asyncio.wait(tasks, timeout=_grace)
+        if not _pending_tasks:
+            return await asyncio.gather(*tasks, return_exceptions=True)
+        if not _cap_reached(self.project.config.limits.max_pages,
+                            await self.frontier.count_done_total()):
+            logger.info(f"收尾窗口({_grace:.0f}s)到期，但页数上限已被调高 —— "
+                        f"{len(_pending_tasks)} 个在途任务改按普通批次继续等待（不取消，防丢产物）")
+            return await asyncio.gather(*tasks, return_exceptions=True)
+        for _t in _pending_tasks:
+            _t.cancel()
+        # cancel 后必须等原任务真正退出：它的 finally 要放出口/信号量、退租约心跳
+        await asyncio.gather(*_pending_tasks, return_exceptions=True)
+        _cut = [(_t, _j) for _t, _j in zip(tasks, batch) if _t in _pending_tasks]
+        logger.warning(
+            f"已达页数上限：本批 {len(tasks)} 个任务里仍有 {len(_cut)} 个在 "
+            f"{_grace:.0f}s 收尾窗口内没返回 —— 上限达成后它们只可能被判超限跳过，"
+            f"故**取消**它们并按「撞上限跳过」记账（是 skipped，**不是 failed**）；"
+            f"它们此时还没开始写任何产物，不存在半写状态")
+        for _t, _job in _cut:
+            _uh = str(_job.get('url_hash', '') or '')
+            try:
+                await self.frontier.mark_failed(_uh, retry=False)
+            except Exception as _me:
+                # 不静默：行若没落终端态，下次运行的租约回收会把它重新排出来
+                logger.warning(f"撞上限取消后落库失败（该行将由租约回收在下次运行重排）: "
+                               f"{_uh[:12]} {_me}")
+            self._count_cap_skip()
+        return await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _video_download_worker(self):
         while not self._should_stop:

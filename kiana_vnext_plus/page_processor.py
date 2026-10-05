@@ -543,8 +543,24 @@ class PageProcessor:
         lease = await asyncio.to_thread(armory.acquire_identity, domain)
         if not isinstance(lease, Acquired):
             # 诚实降级：说清"为什么没身份"，别让登录墙表现成"页面内容不对"
-            logger.info(f"[身份] 域 {domain} 不可用（{lease.reason.value}）："
-                        f"{lease.detail} —— 本页按无 cookie 抓取")
+            #
+            # [v2.19.10 修复·真机日志噪音] 原实现**每页都打一行**。真机实测（2026-10-04，
+            # 150 页抓取）：身份池里只有 1 个身份（B站），于是其余 26 个域名**每个每页**都刷
+            # 一行「该站未入库任何身份」，实测刷了 **60+ 行**，把真正有用的信息淹了。
+            # 现改为**同一域名只提示一次**（首次 INFO，其后 DEBUG）：
+            # 信息一点没少 —— 首次那行已经说清"该域是按无 cookie 抓的"；
+            # 减少的只是同一句话的重复。
+            # 属性声明带类型注解：不标会让 mypy 推成 `set[Never]` / 对不上 `set`，
+            # 而本仓库静态基线是**锁死**的（ruff 80 / mypy 99），不许因改动升
+            if not hasattr(self, "_identity_absent_warned"):
+                self._identity_absent_warned: "set[str]" = set()
+            _absent: "set[str]" = self._identity_absent_warned
+            if domain not in _absent:
+                _absent.add(domain)
+                logger.info(f"[身份] 域 {domain} 不可用（{lease.reason.value}）："
+                            f"{lease.detail} —— 本页按无 cookie 抓取（同域后续不再重复提示）")
+            else:
+                logger.debug(f"[身份] 域 {domain} 仍不可用（{lease.reason.value}）—— 按无 cookie 抓取")
             return await self.router.fetch(url, domain, job)
 
         proto = getattr(self.router, "protocol", None)

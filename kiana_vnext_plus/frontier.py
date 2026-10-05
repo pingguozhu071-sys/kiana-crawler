@@ -653,10 +653,19 @@ class FrontierDB:
         except Exception:
             return {"completed": 0, "bytes": 0}
 
-    async def pop_batch(self, limit=10, worker_id="worker1", strategy="bfs"):
+    async def pop_batch(self, limit=10, worker_id="worker1", strategy="bfs", ignore_schedule=False):
         """取一批待处理任务（租约式）。strategy=[v2.17 E-P1-4] 爬行策略：
         bfs=默认（优先+入队序升序）；dfs=后入先出（深度优先近似）；
-        bff=优先值降序（best-first，priority 表达相关度）。"""
+        bff=优先值降序（best-first，priority 表达相关度）。
+
+        [v2.19.10 修复] `ignore_schedule=True`：**无视 `scheduled_at`（重试退避）取任务**。
+        只给"页数上限已达成之后的排空"用（`crawler.run` 在上限达成时传 True）：
+        那之后队列里剩下的任务**每一条都只会被判超限跳过**（见 `page_processor.process_job`
+        开头的上限分支），等它们的退避到期毫无意义 —— 真机实测（2026-10-04 打包版
+        max_pages=150）为此空转 33.8 秒，`done` 早已封顶、期间一页都不会多。
+        默认 False ⇒ 现有一切调用点行为零变化。（两处后端必须同签名，
+        `tests/test_frontier_backend_parity.py` 会盯着。）
+        """
         async with aiosqlite.connect(self.db_path) as write_conn:
             await write_conn.execute("PRAGMA busy_timeout=30000")
             await write_conn.execute("BEGIN IMMEDIATE")
@@ -668,11 +677,20 @@ class FrontierDB:
                     "UPDATE frontier SET status='pending' WHERE status='leased' "
                     "AND COALESCE(lease_expires, leased_at + ?) < ?",
                     (LEASE_TIMEOUT, time.time()))
+                # [v2.19.10] `ignore_schedule` 只去掉"排期未到不取"这一条谓词；
+                # 重试次数用尽、租约回收、状态过滤都照旧（排空不是绕过正确性）。
+                if ignore_schedule:
+                    _where = ("(status='pending' OR status='retry') AND "
+                              "retry_count < max_retries ")
+                    _params = (limit,)
+                else:
+                    _where = ("(status='pending' OR status='retry') AND "
+                              "scheduled_at <= ? AND retry_count < max_retries ")
+                    _params = (time.time(), limit)
                 cursor = await write_conn.execute(
-                    "SELECT * FROM frontier WHERE (status='pending' OR status='retry') AND "
-                    "scheduled_at <= ? AND retry_count < max_retries " + _ORDER_BY.get(
+                    "SELECT * FROM frontier WHERE " + _where + _ORDER_BY.get(
                         strategy, _ORDER_BY["bfs"]) + " LIMIT ?",
-                    (time.time(), limit)
+                    _params
                 )
                 rows = await cursor.fetchall()
                 if not rows:
