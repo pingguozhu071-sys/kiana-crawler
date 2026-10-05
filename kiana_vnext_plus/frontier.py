@@ -328,6 +328,8 @@ class FrontierDB:
                     try:
                         await db.close()
                     except Exception:
+                        # 关连接失败**不能掩盖上面真正的异常**（那才是要抛出去的），
+                        # 且连接已在 finally 里尽力关闭 —— 故此处只做"尽力而为"。
                         pass
 
             except Exception as e:

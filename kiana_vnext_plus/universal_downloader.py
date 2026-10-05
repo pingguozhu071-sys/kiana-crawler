@@ -190,6 +190,8 @@ def _cookie_copy(src):
             import shutil as _shutil
             _atexit.register(lambda: _shutil.rmtree(_COOKIE_COPY_DIR, ignore_errors=True))
         except Exception:
+            # atexit 注册失败**不影响本次下载**（副本仍在系统临时目录里，最坏只是晚一点被回收），
+            # 故只做尽力而为，不为一个清理钩子中断下载。
             pass
     _fd, _name = tempfile.mkstemp(prefix="ck_", suffix=".txt", dir=str(_COOKIE_COPY_DIR))
     os.close(_fd)
