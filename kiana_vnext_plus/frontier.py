@@ -307,12 +307,28 @@ class FrontierDB:
                 for sql, params in batch:
                     queries.setdefault(sql, []).append(params)
 
-                async with aiosqlite.connect(self.db_path) as db:
+                # ── [v2.19.10 修复·真机 P0] 连接泄漏 ──────────────────────────────
+                # 原实现是 `async with aiosqlite.connect(self.db_path) as db:` ——
+                # **`async with` 对连接只管事务提交/回滚，*不关连接***（与 `sqlite3` 的
+                # `with` 同款语义）。于是**每刷一批就泄漏一个连接 + 一个后台线程**。
+                # 真机证据（2026-10-05，150 页 → 数千批）：泄漏到上千连接后 WAL 被撑到
+                # 26.9 MB、写锁再也拿不到，`OperationalError: database is locked`
+                # **659 次、连续 34 分钟**，抓下来的页面全部"结果未落盘"⇒ 整轮抓取空转报废。
+                # ⚠️ `_init_db` 早已修过**同一处坑**（`with sqlite3.connect(...)` ⇒ 显式
+                #    `conn.close()`），这里是它的翻版 —— 见到 `with/async with connect`
+                #    一律要问一句"连接谁来关"。
+                db = await aiosqlite.connect(self.db_path)
+                try:
                     await db.execute("PRAGMA busy_timeout=30000")
                     await db.execute("BEGIN IMMEDIATE")
                     for sql, params_list in queries.items():
                         await db.executemany(sql, params_list)
                     await db.commit()
+                finally:
+                    try:
+                        await db.close()
+                    except Exception:
+                        pass
 
             except Exception as e:
                 logger.error(f"DB Flush Error: {e}")

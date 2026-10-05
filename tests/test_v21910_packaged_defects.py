@@ -280,3 +280,53 @@ class TestHeartbeatProgressNumbers:
         d, f, sk, pn, tot, pct = self._fn()(progress, {})
         assert (d, f, sk, pn, tot) == (7, 1, 2, 0, 10)
         assert pct == pytest.approx(70.0)
+
+
+# ─────── P0-3：队列库刷批**泄漏连接**（真机 `database is locked` 659 次） ───────
+class TestFlusherDoesNotLeakConnections:
+    """真机症状（2026-10-05 那次 18 集抓取）：
+
+        OperationalError: database is locked      ← **659 次，连续 34 分钟**
+        [ERROR] page_processor: Job failed: ...   ← 抓下来的页面全部"结果未落盘"
+
+    整个爬虫因此从 13:55 空转到 14:29（一个产物都没出），被迫人工杀掉。
+
+    根因：`_batch_flusher` 里写的是 `async with aiosqlite.connect(...) as db:`
+    —— **`async with` 对连接只管事务提交/回滚，*不关连接***（与 `sqlite3` 的 `with` 同款语义）。
+    ⇒ **每刷一批就泄漏一个连接 + 一个 aiosqlite 后台线程**；数千批之后 WAL 被撑到 26.9 MB、
+    写锁再也拿不到。
+
+    判据用**线程数**：aiosqlite 每个连接起一个线程 ⇒ 泄漏 40 批就多约 40 个线程。
+    这是**结构化判据**（数线程），不是查源码文本。
+    """
+
+    def test_flushing_many_batches_does_not_grow_threads(self, tmp_path):
+        import threading
+
+        from kiana_vnext_plus.frontier import FrontierDB
+
+        async def _run():
+            db = FrontierDB(str(tmp_path / "frontier.db"))
+            await db.init_async()
+            await asyncio.sleep(0.3)
+            before = threading.active_count()
+            # 一条一个批次 ⇒ 逼 flusher 走 40 次 connect（正是泄漏点）
+            for i in range(40):
+                await db._write_queue.put(
+                    ("DELETE FROM errors WHERE timestamp < ?", (float(i),)))
+                await asyncio.sleep(0.01)
+            for _ in range(100):
+                if db._write_queue.empty():
+                    break
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.6)
+            after = threading.active_count()
+            await db.close()
+            return before, after
+
+        before, after = asyncio.run(_run())
+        grew = after - before
+        assert grew <= 5, (
+            f"刷 40 批后线程数涨了 {grew}（{before} → {after}）—— "
+            f"每批泄漏一个 aiosqlite 连接/线程；这正是真机上 "
+            f"`database is locked` 刷 34 分钟的根因")
