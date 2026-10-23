@@ -288,6 +288,9 @@ DEFAULT_GLOBAL = OmegaConf.create({
     "llm_budget_month": 500,         # [v2.16.1] LLM 月度预算（条数；默认关 llm_enabled=False 时零开销）
     "bili_danmaku_ass": True,        # [v2.17 2.4] B站弹幕 ASS 副产物（biliass 可选依赖——缺失自动跳过，不报错）
     "robots_respect": False,         # [v2.17 E-P1-1] robots.txt 合规（默认关=既有行为；开启后链接入队前按域缓存判定）
+    # [N-3] 限定同站（默认关=既有行为一字不变；开启后只跟**与种子同站**=同一注册域的链接，
+    # 跨站链接不入队且按数量打日志）。用户 2026-10-18 明确批准"加开关、默认关"。
+    "same_site_only": False,
     "sitemap_discover": False,       # [v2.17 E-P1-2] sitemap 种子播种（默认关；开启后种子域自动发现站点地图并批量入队）
     "crawl_strategy": "bfs",         # [v2.17 E-P1-4] 爬行策略（bfs=默认入队序/dfs=后入先出近似深度/bff=优先值降序）
     "dynamic_priority": False,   # [v2.17 B4b] 证据驱动动态优先级（默认关；规则命中提前/空壳后排）

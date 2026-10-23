@@ -328,6 +328,14 @@ class RedisFrontier:
     async def count_done_total(self):
         return await self.result_db.count_done_total()
 
+    async def last_done_url(self) -> str:
+        """[N-2 配平] 卡死告警要指名"最近一次成功"——Redis 队列里没有这个事实，
+        但 `result_db`（SQLite）**就是**落盘结果库 ⇒ 直接委托，语义一致。
+
+        ⚠️ 这条不是"顺手补个方法"：`test_frontier_backend_parity` 的清单是**从真实调用点
+        AST 推导**的，引擎一旦调了它，Redis 后端缺实现就直接红 —— 那道门禁本来就该红。"""
+        return await self.result_db.last_done_url()
+
     async def set_domain_cooldown(self, domain, until_epoch: float, tier: int):
         await self.result_db.set_domain_cooldown(domain, until_epoch, tier)
 

@@ -102,7 +102,11 @@ else:
 _mpw = _P(_os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
 # [v2.19] 版本号通配（原硬编码 chromium-1228——浏览器升级后静默不入包）
 _browser_picked = []
-if _mpw.is_dir():
+# [v2.19.11] 同 KianaLauncher.spec：浏览器随包改为**显式开启**（KIANA_BUNDLE_BROWSERS=1）。
+# NSIS 单次输入数据上限 2^31 字节；去重后并集 2.125 GiB 仍超，出掉 chromium +
+# headless_shell 后 1.453 GiB 才进得去（实测数字见 tools/pack_installer_payload.py）。
+_BUNDLE_BROWSERS = _os.environ.get("KIANA_BUNDLE_BROWSERS", "") == "1"
+if _BUNDLE_BROWSERS and _mpw.is_dir():
     for _pat in ("chromium-*", "chromium_headless_shell-*"):
         _cands = sorted([d for d in _mpw.glob(_pat) if d.is_dir()],
                         key=lambda p: p.stat().st_mtime, reverse=True)
@@ -111,8 +115,10 @@ if _mpw.is_dir():
             datas.append((str(_srcdir), f"browsers/{_srcdir.name}"))
             _browser_picked.append(_srcdir.name)
             print(f"[spec] 打入浏览器: {_srcdir.name}")
-if not _browser_picked:
-    print("[spec] !! 未找到 ms-playwright Chromium——浏览器渲染能力将不可用")
+if _BUNDLE_BROWSERS and not _browser_picked:
+    print("[spec] !! 要求随包但未找到 ms-playwright Chromium——浏览器渲染能力将不可用")
+elif not _BUNDLE_BROWSERS:
+    print("[spec] 浏览器不随包（要随包请设 KIANA_BUNDLE_BROWSERS=1）——换机首启按需下载")
 
 # [v2.16 阶段1 可移植性] YT PO Token 三件套随包
 # [v2.18.3] 定位增强：环境变量优先，其次本机稳定候选（vendor 目录，防 TEMP 被系统清理）

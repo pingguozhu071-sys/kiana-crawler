@@ -5,8 +5,8 @@ Unicode True
 
 !define APP_NAME "Kiana Vnext Plus"
 !define APP_EXE "KianaLauncher.exe"
-!define APP_VERSION "2.19.9"
-!define VERSION "2.19.9.0"
+!define APP_VERSION "2.19.11"
+!define VERSION "2.19.11.0"
 !define PUBLISHER "Kiana Labs"
 !define DIST_DIR "dist"
 !define ASSETS_DIR "assets"
@@ -106,8 +106,13 @@ Section "$(K_SECTION_MAIN)" SEC_MAIN
     ; 同名文件逐字节一致）。升级时 NSIS 只覆盖不清理——旧版残留 DLL 与新版混跑
     ; （PyInstaller 升级换依赖版本后必炸）。重装/升级前先清 _internal（首次安装无此目录，零影响）。
     RMDir /r "$INSTDIR\_internal"
-    File /r "${DIST_DIR}\KianaLauncher\*.*"
-    File /r "${DIST_DIR}\KianaCrawler\*.*"
+    ; [v2.19.11 载荷并集] 两棵 onedir 有 45.5% 的字节**逐字节重复**（12,847 文件 / 1.774 GiB），
+    ; 而安装时本来就是"依次铺进同一个 $INSTDIR、后者覆盖前者" ⇒ 最终落盘状态**就是并集**。
+    ; 双份压进安装包只有一个后果：把 NSIS 顶到 2 GB 上限（#12345 mmapping file ... out of range）；
+    ; 2026-10-23 实测 32 位 makensis 3.12 与 64 位 makensis 在**同一字节数**报同一句错 ⇒ 换编译器无用。
+    ; 载荷由 tools\pack_installer_payload.py 在编译前合成到 dist\_pack（硬链接，零额外占用）。
+    File /r "${DIST_DIR}\_pack\*.*"
+
     File "${ASSETS_DIR}\icon.ico"
     File "${ASSETS_DIR}\cover.png"
     ; 字体随包（GUI 启动时 AddFontResource 使用；安装向导 .onInit 已临时注册）

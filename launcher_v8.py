@@ -388,6 +388,8 @@ class EngineBridge(QObject):
             "log_level": "INFO",
             "no_sanitize": bool(cfg.get("no_sanitize", False)),
             "robots_respect": bool(cfg.get("robots_respect", False)),
+            # [N-3] 限定同站（默认关=既有行为；开启后只跟与种子同站=同一注册域的链接）
+            "same_site_only": bool(cfg.get("same_site_only", False)),
             "dl_video": bool(cfg.get("dl_video", False)),
             "dl_image": bool(cfg.get("dl_image", False)),
             "dl_audio": bool(cfg.get("dl_audio", False)),

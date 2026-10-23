@@ -92,8 +92,17 @@ except Exception as _e:
 # [v2.19] 版本号改通配扫描：原硬编码 chromium-1228（浏览器升级后 spec 静默不入包，
 #        而 一键构建.bat 用通配报"已存在"——两处行为不一致）
 _mpw = _P(_os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
+# [v2.19.11] 「浏览器随包」改为**显式开启**（KIANA_BUNDLE_BROWSERS=1，默认关）。
+# 默认关是被实测逼出来的，不是口味问题：NSIS 单次输入数据上限是 **2^31 字节**
+# （2026-10-23 实测：makensis 处理到 2,147,173,959 字节即报
+#  `error mmapping datablock` 崩掉；32 位 3.12 与 64 位 makensis 同一个样）。
+# 两棵 onedir 有 45.5% 字节重复，去重后并集仍 2.125 GiB；把同源的 chromium +
+# headless_shell 移出包后降到 1.453 GiB（余量 0.547 GiB）—— 只有这一档能落进上限。
+# 换机首启由 GUI「安装浏览器组件」/ `tools/install_browsers.py` 下载到
+# %LOCALAPPDATA%\ms-playwright；`run_crawler._detect_browser_path()` 认得那个位置。
+_BUNDLE_BROWSERS = _os.environ.get("KIANA_BUNDLE_BROWSERS", "") == "1"
 _browser_picked = []
-if _mpw.is_dir():
+if _BUNDLE_BROWSERS and _mpw.is_dir():
     for _pat in ("chromium-*", "chromium_headless_shell-*"):
         _cands = sorted([d for d in _mpw.glob(_pat) if d.is_dir()],
                         key=lambda p: p.stat().st_mtime, reverse=True)
@@ -102,8 +111,10 @@ if _mpw.is_dir():
             wp_datas.append((str(_srcdir), f"browsers/{_srcdir.name}"))
             _browser_picked.append(_srcdir.name)
             print(f"[spec] 打入浏览器: {_srcdir.name}")
-if not _browser_picked:
-    print("[spec] !! 未找到 ms-playwright Chromium——浏览器渲染/验证码能力将不可用")
+if _BUNDLE_BROWSERS and not _browser_picked:
+    print("[spec] !! 要求随包但未找到 ms-playwright Chromium——浏览器渲染/验证码能力将不可用")
+elif not _BUNDLE_BROWSERS:
+    print("[spec] 浏览器不随包（要随包请设 KIANA_BUNDLE_BROWSERS=1）——换机首启按需下载")
 
 # [v2.16 阶段1 可移植性] YT PO Token 三件套随包
 # [v2.18.3] 定位增强：环境变量优先，其次本机稳定候选（vendor 目录，防 TEMP 被系统清理）

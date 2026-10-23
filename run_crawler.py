@@ -77,7 +77,8 @@ def _detect_browser_path() -> str:
         os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
         os.environ.get("PATCHRIGHT_BROWSERS_PATH", ""),
         str(_P(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"),
-        # [FIXED & MODIFIED] F5：硬编码 C:\Users\<用户名>\... 改为动态拼 LOCALAPPDATA（用户名变化/Hermes 迁移后仍可用）
+        # [FIXED & MODIFIED] F5：原先写死的用户目录改为动态拼 LOCALAPPDATA
+        # （用户名变化 / 迁移到别的机器后仍可用）
         str(_P(os.environ.get("LOCALAPPDATA", "")) / "Hermes Agent CN Desktop" / "data" / "hermes-home" / "cache" / "ms-playwright"),
     ]
     for p in candidates:
@@ -87,10 +88,41 @@ def _detect_browser_path() -> str:
             return p
     return ""
 
+def browser_missing_hint() -> str:
+    """[v2.19.11] 没探测到 Chromium 时给出的**可执行**建议（打包版不再随包浏览器）。
+
+    浏览器出包的原因不是口味：NSIS 单次输入数据上限是 2^31 字节，去重后并集仍
+    2.125 GiB，只有把 chromium + headless_shell 移出包才降到 1.453 GiB
+    （实测与数字见 `tools/pack_installer_payload.py`）。
+
+    **打包版与源码环境的命令不一样**：打包版要用包内那份 driver
+    （`_internal/playwright/driver`），源码环境直接用 pip 装的那份。早先这里不分情况地拼 `_internal/...`，
+    在源码环境下会给出一个根本不存在的路径（2026-10-23 干净机器验收里露出来的）。
+    """
+    from pathlib import Path as _P
+    head = (
+        "[Kiana] 未发现 Chromium —— 浏览器渲染 / 一键登录 / 验证码将不可用。\n"
+        "[Kiana]   装法（装到 %LOCALAPPDATA%\\ms-playwright，本程序会自动认）：\n"
+    )
+    if getattr(sys, "_MEIPASS", ""):
+        exe_dir = _P(sys.executable).parent
+        return (
+            head
+            + f'[Kiana]     python tools\\install_browsers.py --driver "{exe_dir}\\_internal\\playwright\\driver"\n'
+    )
+    return (
+        head
+        + "[Kiana]     python tools\\install_browsers.py\n"
+        "[Kiana]   （打包版请换成：--driver \"<安装目录>\\_internal\\playwright\\driver\"）"
+    )
+
+
 bp = _detect_browser_path()
 if bp:
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", bp)
     os.environ.setdefault("PATCHRIGHT_BROWSERS_PATH", bp)
+else:
+    print(browser_missing_hint())
 
 def _progress_display(progress: dict, counts: dict) -> tuple:
     """[v2.19.10 新增] 把心跳要显示的数字算出来 —— **抽成纯函数是为了可测**。
@@ -198,6 +230,8 @@ async def crawl(urls, cfg, on_engine=None):
         "write_info_json": cfg.get("info", True),
         # [v2.17 E-P1] robots 合规 / sitemap 播种 / 爬行策略（默认关/bfs=既有行为）
         "robots_respect": cfg.get("robots_respect", False),
+    # [N-3] 限定同站（默认关=既有行为；开启后只跟与种子同站=同一注册域的链接）
+    "same_site_only": cfg.get("same_site_only", False),
         "sitemap_discover": cfg.get("sitemap_discover", False),
         "crawl_strategy": str(cfg.get("crawl_strategy", "bfs")),
         # [v2.17 E-P2] 身份捆绑轮换（默认关；开启时出口+cookie 打包虚拟用户）
@@ -527,7 +561,7 @@ def main():
     # [v6 接线缺口] 给 CookieArmory 一个**可达入口**。
     # 此前它既无 GUI 开关也无 CLI 参数，引擎侧的键永远是默认 False —— 等于死代码。
     # 这里只加"命令行可达"（不加 GUI 一键开关：这是风险敏感特性，
-    # 是否上首页开关由用户决定，见内部交接文档）。
+    # 是否上首页开关由用户决定）。
     ap.add_argument("--cookie-armory", action="store_true",
                     help="启用按站身份弹药库（需已配置 cookies；默认关，风险自负）")
     # [v6 修复·用户实测发现] **身份池没有可达的导入入口**。
@@ -557,6 +591,9 @@ def main():
                     help="[v2.17] 开启 sitemap 种子播种（站点地图自动发现并批量入队）")
     ap.add_argument("--robots", action="store_true",
                     help="[v2.17] 开启 robots.txt 合规（链接入队前按域判定）")
+    ap.add_argument("--same-site", action="store_true",
+                    help="[N-3] 开启限定同站：只跟与种子同站（同一注册域）的链接，"
+                         "跨站链接不入队（默认关=既有行为）")
     ap.add_argument("--strategy", choices=("bfs", "dfs", "bff"), default="bfs",
                     help="[v2.17] 爬行策略：bfs 广度(默认)/dfs 深度近似/bff 优先值降序")
     ap.add_argument("--dynamic-priority", action="store_true",
@@ -590,6 +627,8 @@ def main():
     # [v2.17 E-P1] sitemap/robots 开关透传（默认关）
     if args.sitemap: cfg["sitemap_discover"] = True
     if args.robots: cfg["robots_respect"] = True
+    # [N-3] 限定同站（默认关；显式传才开）
+    if args.same_site: cfg["same_site_only"] = True
     cfg["crawl_strategy"] = args.strategy  # bfs 默认（既有行为）
     # [v2.17 B4b] 证据驱动动态优先级（默认关）
     if args.dynamic_priority:

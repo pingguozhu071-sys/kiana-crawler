@@ -96,7 +96,9 @@ class TestAccountsV6Migration(unittest.TestCase):
                                " ORDER BY url_hash"))
         c.close()
 
-        self.assertEqual(ver, 6, "应迁移到 v6")
+        # 终态版本号引用 SCHEMA_VERSION，不写死 6 —— `frontier.SCHEMA_VERSION` 的注释
+        # 已经点名："版本号散落在用例里"是迁移类改动的固定返工源（v6 落地时就返工过一次）。
+        self.assertEqual(ver, fm.SCHEMA_VERSION, "应迁移到当前 SCHEMA_VERSION")
         for name in V6_COLUMNS:
             self.assertIn(name, cols)
         # 老数据零丢失（身份键 / 密文 / 健康分 / 计数全部原样）
@@ -114,7 +116,7 @@ class TestAccountsV6Migration(unittest.TestCase):
         fm.FrontierDB(self.path)
         fm.FrontierDB(self.path)                     # 二次迁移必须无变化
         c = sqlite3.connect(self.path)
-        self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0], 6)
+        self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0], fm.SCHEMA_VERSION)
         self.assertEqual(c.execute("SELECT COUNT(*) FROM accounts").fetchone()[0], 2)
         self.assertEqual(c.execute("SELECT COUNT(*) FROM frontier").fetchone()[0], 2)
         c.close()
@@ -125,7 +127,7 @@ class TestAccountsV6Migration(unittest.TestCase):
         cols = {r[1] for r in c.execute("PRAGMA table_info(accounts)")}
         ver = c.execute("PRAGMA user_version").fetchone()[0]
         c.close()
-        self.assertEqual(ver, 6)
+        self.assertEqual(ver, fm.SCHEMA_VERSION)   # 见上：不写死数字
         for name in V6_COLUMNS:
             self.assertIn(name, cols)
 
@@ -147,7 +149,7 @@ class TestAccountsV6Migration(unittest.TestCase):
         ver = c.execute("PRAGMA user_version").fetchone()[0]
         cols_after = {r[1] for r in c.execute("PRAGMA table_info(accounts)")}
         c.close()
-        self.assertEqual(ver, 6)
+        self.assertEqual(ver, fm.SCHEMA_VERSION)   # 见上：不写死数字
         self.assertEqual(cols_before, cols_after, "两个入口打开的列集必须一致")
 
 

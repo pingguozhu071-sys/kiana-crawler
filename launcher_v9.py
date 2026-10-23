@@ -892,6 +892,10 @@ class HomePage(_Page):
         self.sw_audio = self._switch("下载音频", checks, bool(cfg.get("dl_audio", False)))
         self.sw_sanitize = self._switch("内容脱敏", checks, bool(cfg.get("sanitize", True)))
         self.sw_robots = self._switch("协议合规", checks, bool(cfg.get("robots_respect", False)))
+        # [N-3] 限定同站（**默认关**=既有行为一字不变；用户 2026-10-18 明确批准）
+        # 勾上后只跟与种子同站（同一注册域，如 www./manga. 都算 bilibili.com）的链接，
+        # 滚出站到 microsoft.com/apple.com 那类不再入队；跳过的条数会在日志里汇总。
+        self.sw_same_site = self._switch("限定同站", checks, bool(cfg.get("same_site_only", False)))
         # [v6 P2] 两个原本"只能改配置文件、界面无入口"的键：
         #   · 显示浏览器窗口 ←→ `headless`（**反向**：勾上=有头，headless=False）
         #     无头是默认（省内存、不弹窗）；要看渲染过程/手动过验证码时才需要打开。
@@ -2432,7 +2436,8 @@ class KianaV9(FluentWindow):
         h.filter_edit.textChanged.connect(lambda t: self.config.__setitem__("filter_text", t))
         for sw, key, default in ((h.sw_video, "dl_video", True), (h.sw_image, "dl_image", True),
                                  (h.sw_audio, "dl_audio", False), (h.sw_sanitize, "sanitize", True),
-                                 (h.sw_robots, "robots_respect", False)):
+                                 (h.sw_robots, "robots_respect", False),
+                                 (h.sw_same_site, "same_site_only", False)):
             sw.checkedChanged.connect(lambda c, k=key, d=default: self.config.__setitem__(k, c))
         # 设置页 cookie 镜像（坑9：双入口同步保留 —— 现在设置页那格是**只读镜像**，
         # 权威值只有首页 Cookies 框一个，见 SettingsPage.build 里的说明）
@@ -3237,6 +3242,8 @@ class KianaV9(FluentWindow):
             "dl_video": h.sw_video.isChecked(), "dl_image": h.sw_image.isChecked(),
             "dl_audio": h.sw_audio.isChecked(), "no_sanitize": not h.sw_sanitize.isChecked(),
             "robots_respect": bool(h.sw_robots.isChecked()),
+            # [N-3] 限定同站（默认关；勾上=只跟与种子同站的链接）
+            "same_site_only": bool(h.sw_same_site.isChecked()),
             "filter_words": h.filter_edit.text().strip(),
             "cookie_file": h.cookie_edit.text().strip(),  # v2.11 修复保留：自填 cookies 传入引擎
             "resolution": ["highest", "2160", "1440", "1080", "720", "480"][h.res_combo.currentIndex()],
@@ -3271,7 +3278,7 @@ class KianaV9(FluentWindow):
         self.config.update({k: cfg[k] for k in
                             ("depth", "pages", "outdir", "dl_video", "dl_image",
                              "dl_audio", "filter_words", "resolution", "subs", "thumb", "info",
-                             "robots_respect")})
+                             "robots_respect", "same_site_only")})
         self.config["sanitize"] = h.sw_sanitize.isChecked()
         self.config["filter_text"] = cfg["filter_words"]
         save_config(self.config)

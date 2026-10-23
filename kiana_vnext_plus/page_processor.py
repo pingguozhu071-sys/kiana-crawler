@@ -316,6 +316,24 @@ class PageProcessor:
                             continue
                     except Exception:
                         pass
+                # [N-3] 限定同站闸（**默认关**；开启后只跟种子同站=同一注册域的链接）。
+                # 位置与 SSRF/robots 闸并排：三者都是"**入队前**的闸"，顺序无讲究。
+                if getattr(self.crawler, '_same_site_only', False):
+                    try:
+                        from .url_utils import site_of as _site_of
+                        _scope = getattr(self.crawler, '_site_scope', None) or set()
+                        _site = _site_of(link)
+                        # ⚠️ 站点判不出来（畸形 URL / IP 字面量）⇒ **不放行**：
+                        #    放行等于把"不知道"当成"同站"——那正是"静默滚出站"。
+                        #    判不出来的链接本来就多半抓不动，拦掉代价极低。
+                        if not _site or _site not in _scope:
+                            self.crawler.note_cross_site_skipped(_site, link)
+                            continue
+                    except Exception:
+                        # 判定本身出错 ⇒ **不放行**（保守），但不能因此把整页链接都丢掉
+                        logger.debug(f"同站判定失败（按跨站处理）: {link[:60]}")
+                        self.crawler.note_cross_site_skipped("", link)
+                        continue
                 if not await self.frontier.is_visited(_uh(link)):
                     priority = llm_priorities.get(link, self._calc_priority(link))
                     await self.frontier.push(link, depth=job['depth'] + 1,

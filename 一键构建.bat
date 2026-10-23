@@ -1,140 +1,149 @@
-@echo off
+ï»¿@echo off
 chcp 65001 >nul 2>&1
-title Kiana Vnext Plus - Ò»¼ü¹¹½¨¹¤¾ß v2.10.5
+title Kiana Vnext Plus - ä¸€é”®æ„å»ºå·¥å…· v2.10.5
 setlocal enabledelayedexpansion
-cd /d "%~dp0"
+REM [v2.19.11 ä¿®å¤] æ˜¾å¼ç»™å­è¿›ç¨‹å®š UTF-8 è¾“å‡ºç¼–ç ã€‚
+REM è„šæœ¬ç¬¬ 2 è¡Œçš„ chcp 65001 åªå¯¹**äº¤äº’å¼æ§åˆ¶å°**æœ‰æ•ˆï¼›ä¸€æ—¦è¾“å‡ºè¢«é‡å®šå‘
+REM ï¼ˆå®˜æ–¹æ¨èçš„åå°è·‘æ³•ï¼šcmd /c "ä¸€é”®æ„å»º.bat < nul > æ—¥å¿—"ï¼‰ï¼Œ
+REM å­è¿›ç¨‹ stdout ä¼šé€€å›**ç³»ç»Ÿ ANSI ä»£ç é¡µ**ï¼ˆæœ¬æœº 936/GBKï¼‰
+REM â‡’ è¾“å‡ºä¸­æ–‡çš„æµ‹è¯•æŠ› UnicodeEncodeError â‡’ ç¬¬ [4b/7] æ­¥ã€Œè¡Œä¸ºæµ‹è¯•ã€**å‡ FAIL**ã€
+REM æ„å»ºè¢«ä¸­æ­¢ã€‚åŒä¸€å‘æœ¬å·¥ç¨‹åœ¨ tools/release_check.py é‡Œå·²ä¿®è¿‡ï¼ˆv2.19.9ï¼‰ï¼Œ
+REM æ„å»ºè„šæœ¬æ¼äº† â‡’ è¿™é‡Œè¡¥ä¸Šã€‚
+set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
+cd /d "%~dp0."
 
 echo ==================================================
 echo   Kiana Vnext Plus
-echo   Windows Ò»¼ü¹¹½¨¹¤¾ß (v2.10.5)
-echo   PyInstaller Ë« exe + NSIS °²×°Æ÷
+echo   Windows ä¸€é”®æ„å»ºå·¥å…· (v2.10.5)
+echo   PyInstaller åŒ exe + NSIS å®‰è£…å™¨
 echo ==================================================
 echo.
 
-REM === [1/7] ¼ì²é Python ===
-echo [1/7] ¼ì²é Python »·¾³...
+REM === [1/7] æ£€æŸ¥ Python ===
+echo [1/7] æ£€æŸ¥ Python ç¯å¢ƒ...
 python --version >nul 2>&1
 if !ERRORLEVEL! neq 0 (
-    echo   X Î´ÕÒµ½ Python! ÇëÏÈ°²×° Python 3.11+
-    echo   ÏÂÔØµØÖ·: https://www.python.org/downloads/
+    echo   X æœªæ‰¾åˆ° Python! è¯·å…ˆå®‰è£… Python 3.11+
+    echo   ä¸‹è½½åœ°å€: https://www.python.org/downloads/
     pause
     exit /b 1
 )
-echo   OK Python ¿ÉÓÃ
+echo   OK Python å¯ç”¨
 
-REM === [2/7] ¼ì²é¹Ø¼üÒÀÀµ ===
-echo [2/7] ¼ì²é¹Ø¼üÒÀÀµ...
+REM === [2/7] æ£€æŸ¥å…³é”®ä¾èµ– ===
+echo [2/7] æ£€æŸ¥å…³é”®ä¾èµ–...
 python -c "import PySide6, yt_dlp, curl_cffi, omegaconf, aiofiles, ddddocr, trafilatura, openpyxl, qfluentwidgets" >nul 2>&1
 if !ERRORLEVEL! neq 0 (
-    echo   ! ÒÀÀµÈ±Ê§£¬°´ requirements.txt Ëø¶¨°æ°²×°...
-    REM [FIXED & MODIFIED] v2.14 ¹©Ó¦Á´Í³Ò»£ºµ¥Ò»Çåµ¥£¨È¥ --upgrade ·ÀÉı¼¶Õ¨°ü£©
+    echo   ! ä¾èµ–ç¼ºå¤±ï¼ŒæŒ‰ requirements.txt é”å®šç‰ˆå®‰è£…...
+    REM [FIXED & MODIFIED] v2.14 ä¾›åº”é“¾ç»Ÿä¸€ï¼šå•ä¸€æ¸…å•ï¼ˆå» --upgrade é˜²å‡çº§ç‚¸åŒ…ï¼‰
     pip install -r kiana_vnext_plus\requirements.txt
-    REM [v2.19.3] ¿ª·¢/²âÊÔÒÀÀµ¶ÀÁ¢Çåµ¥£¨pytest/ruff/mypy/pyinstaller/pip-audit£©
+    REM [v2.19.3] å¼€å‘/æµ‹è¯•ä¾èµ–ç‹¬ç«‹æ¸…å•ï¼ˆpytest/ruff/mypy/pyinstaller/pip-auditï¼‰
     pip install -r requirements-dev.txt
     if !ERRORLEVEL! neq 0 (
-        echo   X ÒÀÀµ°²×°Ê§°Ü! ÇëÊÖ¶¯¼ì²éÍøÂç/pip
+        echo   X ä¾èµ–å®‰è£…å¤±è´¥! è¯·æ‰‹åŠ¨æ£€æŸ¥ç½‘ç»œ/pip
         pause
         exit /b 1
     )
-    echo   OK ÒÀÀµ°²×°Íê³É
+    echo   OK ä¾èµ–å®‰è£…å®Œæˆ
 ) else (
-    echo   OK ÒÀÀµÆëÈ«
-    REM [v2.19.3] ÔËĞĞÊ±ÒÀÀµÆëÈ«Ê±Ò²È·±£²âÊÔ¹¤¾ßÔÚÎ»£¨µÚ 4b ²½ÒªÅÜ pytest£©
+    echo   OK ä¾èµ–é½å…¨
+    REM [v2.19.3] è¿è¡Œæ—¶ä¾èµ–é½å…¨æ—¶ä¹Ÿç¡®ä¿æµ‹è¯•å·¥å…·åœ¨ä½ï¼ˆç¬¬ 4b æ­¥è¦è·‘ pytestï¼‰
     python -c "import pytest, ruff" >nul 2>&1
     if !ERRORLEVEL! neq 0 (
-        echo   ! ²âÊÔ¹¤¾ßÈ±Ê§£¬°´ requirements-dev.txt °²×°...
+        echo   ! æµ‹è¯•å·¥å…·ç¼ºå¤±ï¼ŒæŒ‰ requirements-dev.txt å®‰è£…...
         pip install -r requirements-dev.txt
     )
 )
 
-REM === [3/7] ¼ì²é Chromium ä¯ÀÀÆ÷ ###
-echo [3/7] ¼ì²é Chromium ä¯ÀÀÆ÷...
+REM === [3/7] æ£€æŸ¥ Chromium æµè§ˆå™¨ ###
+echo [3/7] æ£€æŸ¥ Chromium æµè§ˆå™¨...
 set "PW_CACHE=%LOCALAPPDATA%\ms-playwright"
-REM [FIXED & MODIFIED] v2.14 Í¨ÅäĞŞ¶©ºÅ£¨Ô­Ó²±àÂë chromium-1228£¬ä¯ÀÀÆ÷Éı¼¶ºóÃ¿´Î¹¹½¨Îó±¨È±Ê§£©
+REM [FIXED & MODIFIED] v2.14 é€šé…ä¿®è®¢å·ï¼ˆåŸç¡¬ç¼–ç  chromium-1228ï¼Œæµè§ˆå™¨å‡çº§åæ¯æ¬¡æ„å»ºè¯¯æŠ¥ç¼ºå¤±ï¼‰
 set "CHROMIUM_FOUND="
 for /d %%D in ("!PW_CACHE!\chromium-*") do set "CHROMIUM_FOUND=%%D"
 if defined CHROMIUM_FOUND (
-    echo   OK Chromium ÒÑ´æÔÚ
+    echo   OK Chromium å·²å­˜åœ¨
 ) else (
-    echo   ! Î´ÕÒµ½ ms-playwright Chromium (²»Ó°Ïì´¿ CLI ÏÂÔØ, Ó°Ïìä¯ÀÀÆ÷äÖÈ¾/ÑéÖ¤Âë)
-    echo   ! ¿ÉÑ¡: python -m patchright install chromium
+    echo   ! æœªæ‰¾åˆ° ms-playwright Chromium (ä¸å½±å“çº¯ CLI ä¸‹è½½, å½±å“æµè§ˆå™¨æ¸²æŸ“/éªŒè¯ç )
+    echo   ! å¯é€‰: python -m patchright install chromium
 )
 
-REM === [4/7] Óï·¨¼ì²é ===
-echo [4/7] Óï·¨¼ì²é...
-REM [FIXED & MODIFIED] v2.18 Óï·¨¼ì²éÈë¿Ú¶ÔÆë spec£¨GUI ÕæÈë¿Ú launcher_v9.py¡ª¡ªÔ­ glob v8 ¾É¿Ç£¬¼ì²éÁË¸ö¼ÅÄ¯£©
-python -c "import py_compile, glob, sys; files=glob.glob('launcher_v9.py')+glob.glob('run_crawler.py')+glob.glob('kiana_vnext_plus/*.py'); [py_compile.compile(f, doraise=True) for f in files]; print('OK Óï·¨¼ì²éÍ¨¹ı')" >nul 2>&1
+REM === [4/7] è¯­æ³•æ£€æŸ¥ ===
+echo [4/7] è¯­æ³•æ£€æŸ¥...
+REM [FIXED & MODIFIED] v2.18 è¯­æ³•æ£€æŸ¥å…¥å£å¯¹é½ specï¼ˆGUI çœŸå…¥å£ launcher_v9.pyâ€”â€”åŸ glob v8 æ—§å£³ï¼Œæ£€æŸ¥äº†ä¸ªå¯‚å¯ï¼‰
+python -c "import py_compile, glob, sys; files=glob.glob('launcher_v9.py')+glob.glob('run_crawler.py')+glob.glob('kiana_vnext_plus/*.py'); [py_compile.compile(f, doraise=True) for f in files]; print('OK è¯­æ³•æ£€æŸ¥é€šè¿‡')" >nul 2>&1
 if !ERRORLEVEL! neq 0 (
-    echo   X Óï·¨¼ì²éÊ§°Ü!
+    echo   X è¯­æ³•æ£€æŸ¥å¤±è´¥!
     pause
     exit /b 1
 )
-echo   OK Óï·¨¼ì²éÍ¨¹ı
+echo   OK è¯­æ³•æ£€æŸ¥é€šè¿‡
 
-REM === [4c/7] ¾²Ì¬¼ì²é£¨ruff/mypy ¾¯¸æ²»×è¶Ï£¬½ø¹¹½¨£©===
-echo [4c/7] ¾²Ì¬¼ì²é (ruff/mypy)...
+REM === [4c/7] é™æ€æ£€æŸ¥ï¼ˆruff/mypy è­¦å‘Šä¸é˜»æ–­ï¼Œè¿›æ„å»ºï¼‰===
+echo [4c/7] é™æ€æ£€æŸ¥ (ruff/mypy)...
 python -m ruff check . >nul 2>&1
 if !ERRORLEVEL! neq 0 (
-    echo   ! ruff ±¨¸æÎÊÌâ£¨²»×è¶Ï£¬ÊÖ¶¯ python -m ruff check . ²é¿´£©
+    echo   ! ruff æŠ¥å‘Šé—®é¢˜ï¼ˆä¸é˜»æ–­ï¼Œæ‰‹åŠ¨ python -m ruff check . æŸ¥çœ‹ï¼‰
 )
 python -m mypy kiana_vnext_plus --ignore-missing-imports >nul 2>&1
 if !ERRORLEVEL! neq 0 (
-    echo   ! mypy ±¨¸æÎÊÌâ£¨²»×è¶Ï£¬ÊÖ¶¯ python -m mypy kiana_vnext_plus ²é¿´£©
+    echo   ! mypy æŠ¥å‘Šé—®é¢˜ï¼ˆä¸é˜»æ–­ï¼Œæ‰‹åŠ¨ python -m mypy kiana_vnext_plus æŸ¥çœ‹ï¼‰
 )
-echo   OK ¾²Ì¬¼ì²éÍê³É
+echo   OK é™æ€æ£€æŸ¥å®Œæˆ
 
-REM === [4b/7] ĞĞÎª²âÊÔ£¨Â©»Ø¹é·ÀÏß£©===
-echo [4b/7] ĞĞÎª²âÊÔ (pytest)...
+REM === [4b/7] è¡Œä¸ºæµ‹è¯•ï¼ˆæ¼å›å½’é˜²çº¿ï¼‰===
+echo [4b/7] è¡Œä¸ºæµ‹è¯• (pytest)...
 python -m pytest tests -q >nul 2>&1
 if !ERRORLEVEL! neq 0 (
-    echo   X ²âÊÔÊ§°Ü! ÖĞÖ¹¹¹½¨£¨»Ø¹éÎ´¹ı²»µÃ´ò°ü£©
+    echo   X æµ‹è¯•å¤±è´¥! ä¸­æ­¢æ„å»ºï¼ˆå›å½’æœªè¿‡ä¸å¾—æ‰“åŒ…ï¼‰
     pause
     exit /b 1
 )
-echo   OK ĞĞÎª²âÊÔÍ¨¹ı (100+)
+echo   OK è¡Œä¸ºæµ‹è¯•é€šè¿‡ (100+)
 
-REM === [4d/7] PO Token ×é¼ş£¨´ò°ü±Ø±¸£¬Â©Éè»·¾³±äÁ¿Ôò YT ÏÂÔØ¾²Ä¬Ê§Ğ§£©===
-echo [4d/7] PO Token ×é¼ş...
-REM [v2.18.3] ×Ô¶¯¶¨Î» vendor Ä¿Â¼£¨Ô­ĞèÊÖ¶¯ export£¬Â©Éè¼´¾²Ä¬¶ª×é¼ş£©
+REM === [4d/7] PO Token ç»„ä»¶ï¼ˆæ‰“åŒ…å¿…å¤‡ï¼Œæ¼è®¾ç¯å¢ƒå˜é‡åˆ™ YT ä¸‹è½½é™é»˜å¤±æ•ˆï¼‰===
+echo [4d/7] PO Token ç»„ä»¶...
+REM [v2.18.3] è‡ªåŠ¨å®šä½ vendor ç›®å½•ï¼ˆåŸéœ€æ‰‹åŠ¨ exportï¼Œæ¼è®¾å³é™é»˜ä¸¢ç»„ä»¶ï¼‰
 set "POT_SERVER_DIR=%LOCALAPPDATA%\KianaVnextPlus\vendor\bgutil-pot\server"
 set "DENO_EXE=%LOCALAPPDATA%\KianaVnextPlus\vendor\deno.exe"
 if exist "%POT_SERVER_DIR%\build\main.js" (
-    echo   OK PO Token server ÒÑ¶¨Î»
+    echo   OK PO Token server å·²å®šä½
 ) else (
-    echo   ! Î´ÕÒµ½ PO Token server: %POT_SERVER_DIR%
-    echo   ! YT ÏÂÔØ½«²»¿ÉÓÃ£¨ÆäÓà¹¦ÄÜ²»ÊÜÓ°Ïì£¬¿É¼ÌĞø¹¹½¨£©
+    echo   ! æœªæ‰¾åˆ° PO Token server: %POT_SERVER_DIR%
+    echo   ! YT ä¸‹è½½å°†ä¸å¯ç”¨ï¼ˆå…¶ä½™åŠŸèƒ½ä¸å—å½±å“ï¼Œå¯ç»§ç»­æ„å»ºï¼‰
 )
 if exist "%DENO_EXE%" (
-    echo   OK deno.exe ÒÑ¶¨Î»
+    echo   OK deno.exe å·²å®šä½
 ) else (
-    echo   ! Î´ÕÒµ½ deno.exe: %DENO_EXE%
+    echo   ! æœªæ‰¾åˆ° deno.exe: %DENO_EXE%
 )
 
-REM === [5/7] PyInstaller ´ò°ü (Ë« exe) ###
-echo [5/7] PyInstaller ´ò°ü (ĞèÒª5-15·ÖÖÓ)...
+REM === [5/7] PyInstaller æ‰“åŒ… (åŒ exe) ###
+echo [5/7] PyInstaller æ‰“åŒ… (éœ€è¦5-15åˆ†é’Ÿ)...
 echo.
 echo   --- KianaLauncher (GUI, onedir) ---
 python -m PyInstaller --noconfirm --clean KianaLauncher.spec
 if !ERRORLEVEL! neq 0 (
-    echo   X Launcher ´ò°üÊ§°Ü!
+    echo   X Launcher æ‰“åŒ…å¤±è´¥!
     pause
     exit /b 1
 )
-echo   OK KianaLauncher.exe ´ò°üÍê³É
+echo   OK KianaLauncher.exe æ‰“åŒ…å®Œæˆ
 
 echo.
 echo   --- KianaCrawler (onedir, CLI) ---
 python -m PyInstaller --noconfirm --clean KianaCrawler.spec
 if !ERRORLEVEL! neq 0 (
-    echo   X Crawler ´ò°üÊ§°Ü!
+    echo   X Crawler æ‰“åŒ…å¤±è´¥!
     pause
     exit /b 1
 )
-echo   OK KianaCrawler.exe ´ò°üÍê³É
+echo   OK KianaCrawler.exe æ‰“åŒ…å®Œæˆ
 
-REM === [6/7] NSIS °²×°Æ÷ ===
-echo [6/7] NSIS °²×°Æ÷...
-REM [FIXED & MODIFIED] v2.11 PATH ¶µµ×£ºĞÂÖÕ¶Ë PATH ³£È± NSIS ¡ú Ì½²â±ê×¼°²×°Â·¾¶
+REM === [6/7] NSIS å®‰è£…å™¨ ===
+echo [6/7] NSIS å®‰è£…å™¨...
+REM [FIXED & MODIFIED] v2.11 PATH å…œåº•ï¼šæ–°ç»ˆç«¯ PATH å¸¸ç¼º NSIS â†’ æ¢æµ‹æ ‡å‡†å®‰è£…è·¯å¾„
 set "MAKENSIS=makensis"
 where makensis >nul 2>&1
 if !ERRORLEVEL! neq 0 (
@@ -143,28 +152,38 @@ if !ERRORLEVEL! neq 0 (
     ) else if exist "%ProgramFiles%\NSIS\makensis.exe" (
         set "MAKENSIS=%ProgramFiles%\NSIS\makensis.exe"
     ) else (
-        echo   ! ÕÒ²»µ½ makensis, Ìø¹ı NSIS (dist ÒÑÉú³É, ¿ÉÖ±½ÓÊ¹ÓÃ)
+        echo   ! æ‰¾ä¸åˆ° makensis, è·³è¿‡ NSIS (dist å·²ç”Ÿæˆ, å¯ç›´æ¥ä½¿ç”¨)
         goto :CHECK
     )
 )
-echo   --- Éú³É°²×°°ü ---
-"!MAKENSIS!" kiana_setup.nsi
+REM [v2.19.11] è½½è·å¹¶é›†ï¼šä¸¤ä»½ onedir æœ‰ 45.5% å­—èŠ‚é‡å¤ï¼ˆ1.774 GiBï¼‰ï¼ŒåŒä»½å‹åŒ…ä¼šæ’ NSIS 2 GB ä¸Šé™
+REM            åˆæˆåˆ° dist\_packï¼ˆç¡¬é“¾æ¥ï¼Œé›¶é¢å¤–å ç”¨ï¼‰ï¼Œå®‰è£…åŒ…åªå‹ä¸€ä»½
+echo   --- åˆæˆå®‰è£…è½½è· (è·¯å¾„å¹¶é›†) ---
+python tools\pack_installer_payload.py --dist dist
 if !ERRORLEVEL! neq 0 (
-    echo   X makensis Ê§°Ü (½Å±¾±ØĞë UTF-8 BOM)
+    echo   X è½½è·åˆæˆå¤±è´¥!
     pause
     exit /b 1
 )
-echo   OK NSIS °²×°°üÉú³ÉÍê³É
+
+echo   --- ç”Ÿæˆå®‰è£…åŒ… ---
+"!MAKENSIS!" kiana_setup.nsi
+if !ERRORLEVEL! neq 0 (
+    echo   X makensis å¤±è´¥ (è„šæœ¬å¿…é¡» UTF-8 BOM)
+    pause
+    exit /b 1
+)
+echo   OK NSIS å®‰è£…åŒ…ç”Ÿæˆå®Œæˆ
 
 :CHECK
-REM === [7/7] ¼ì²éÊä³ö ===
-echo [7/7] ¼ì²éÊä³ö...
+REM === [7/7] æ£€æŸ¥è¾“å‡º ===
+echo [7/7] æ£€æŸ¥è¾“å‡º...
 echo.
-echo   dist\KianaLauncher.exe   (GUI µ¥ÎÄ¼ş)
+echo   dist\KianaLauncher.exe   (GUI å•æ–‡ä»¶)
 echo   dist\KianaCrawler\       (CLI onedir)
-echo   KianaVnextPlus-Setup-*.exe (°²×°°ü, Èô makensis ¿ÉÓÃ)
+echo   KianaVnextPlus-Setup-*.exe (å®‰è£…åŒ…, è‹¥ makensis å¯ç”¨)
 echo.
 echo ==================================================
-echo   ¹¹½¨Íê³É! Òª·¢²¼: ÔËĞĞ kiana_setup.nsi Éú³É°²×°°ü
+echo   æ„å»ºå®Œæˆ! å®‰è£…åŒ…: ä»“åº“æ ¹ç›®å½• KianaVnextPlus-Setup-*.exe
 echo ==================================================
 pause

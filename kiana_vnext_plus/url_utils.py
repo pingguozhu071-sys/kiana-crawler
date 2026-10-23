@@ -209,6 +209,72 @@ def extract_domain(url):
         return netloc
 
 
+# ══════════════════════════════════════════════════════════════════════
+# [N-3] "站"（site）的判定 —— **同站限定的唯一实现**
+#
+# 为什么要单独一个函数：N-3 的"限定同站"开关要回答"这条链接算不算同一个站"。
+# 这个判断**必须只有一处** —— 两处各写一遍，漏一处就会出现
+# "下载器认得、身份池不认得"那种分叉（cookies 那条链已经踩过一次，
+# 见 v2.19.11 来源链收口记录）。
+#
+# 口径：**注册域**（eTLD+1），即 `www.bilibili.com` / `manga.bilibili.com`
+# 都算 `bilibili.com`。理由：抓番剧时页内链接本来就在 bilibili.com 各个子域之间跳
+# （番剧页 → 播放页 → 弹幕页），按**精确主机名**判会把这些**自己的**链接也砍掉；
+# 而用户真正要挡的是 microsoft.com / apple.com / bing.com 那种**滚出站**。
+#
+# ⚠️ 公共后缀表（PSL）全量有上万条，本模块**不引入**它（不为一处判定加一个重依赖）。
+#    折中：用一张**常见二级后缀**的白名单补位（co.uk / com.cn / org.cn …），
+#    其余一律按"最后两段"处理。对爬虫场景足够，且**行为是确定的、可解释的**。
+# ══════════════════════════════════════════════════════════════════════
+
+# 常见的"二级后缀"（= 公共后缀里那些本身就是两段的）
+_MULTI_PART_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "sch.uk",
+    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn",
+    "com.hk", "org.hk", "com.tw", "org.tw", "co.jp", "ne.jp", "or.jp",
+    "co.kr", "or.kr", "com.au", "net.au", "org.au", "co.nz", "com.br",
+    "com.mx", "com.sg", "com.my", "co.in", "com.ar", "com.tr", "com.ua",
+    "com.pl", "com.ru", "com.vn", "com.ph", "com.sa", "com.eg",
+})
+
+
+def site_of(url_or_host) -> str:
+    """取"站"（注册域）—— **同站限定的唯一判定**。
+
+    返回小写注册域；无法判定时返回 `""`（调用方须按"不知道"处理，**不许当成同站放行**）。
+    """
+    host = extract_domain(url_or_host)
+    if not host:
+        return ""
+    # `extract_domain` 返回 netloc ⇒ 可能带端口/用户信息/IPv6 方括号，先剥掉。
+    # ⚠️ IPv6 **必须先剥方括号再拆端口**：否则 `[::1]` 会被 `split(":")` 切成 "["。
+    host = host.split("@")[-1].strip()
+    if host.startswith("["):
+        host = host[1:].split("]")[0]
+    else:
+        host = host.split(":")[0]
+    host = host.strip(".")
+    if not host or _is_ip_literal(host):
+        return ""                      # IP 字面量没有"站"的概念
+    labels = host.split(".")
+    if len(labels) < 2:
+        return host                    # 裸主机名（如 `localhost`）—— 本身就是全部
+    last2 = ".".join(labels[-2:])
+    if last2 in _MULTI_PART_SUFFIXES and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return last2
+
+
+def _is_ip_literal(host: str) -> bool:
+    """主机名是不是 IP 字面量（v4/v6）—— IP 没有注册域。"""
+    import ipaddress
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
 # ═══ [FIXED & MODIFIED] v2.14 阶段3 安全基线：统一文件名/目录名清洗 + 私网判定 ═══
 # [v2.16.1] SSRF 加固：数字字面用系统解析器（AI_NUMERICHOST，与 curl 同语义——
 # 覆盖十进制/十六进制/八进制/段数变体：2130706433、0x7f000001、127.1、0177.0.0.1）；

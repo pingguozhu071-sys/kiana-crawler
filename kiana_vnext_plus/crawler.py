@@ -338,6 +338,14 @@ class Crawler:
             pass
         # [v2.17 E-P1-1] robots 合规开关（默认关；开启后链接入队经 robots_policy 判定）
         self._robots_respect = bool(self.cfg.get("robots_respect", False))
+        # [N-3] 限定同站开关（**默认关 = 既有行为一字不变**）。
+        # 开启后只跟**与种子同站**（同一注册域）的链接；跨站链接不入队，
+        # 且**必须打日志说明跳过了多少条**（红线：静默丢弃是本工程最忌讳的）。
+        # 允许站集合由种子算出（见 `set_site_scope`），也可由 `same_site_domains` 补充。
+        self._same_site_only = bool(self.cfg.get("same_site_only", False))
+        self._site_scope: set = set()      # 允许的"站"（注册域）
+        self._cross_site_skipped = 0        # 被同站闸拦下的链接数（可观测）
+        self._cross_site_domains: dict = {}  # 跳过的链接按站计数（收尾汇总用）
         # [v2.17 E-P2] 身份捆绑池（默认关——开启时出口+cookie 捆绑虚拟用户）
         self._init_identity_bundle()
         # [v2.17 E-P1-2] sitemap 种子播种（默认关；开启后种子域自动发现站点地图批量入队）
@@ -395,9 +403,168 @@ class Crawler:
         )
         self._progress = {'done': 0, 'failed': 0, 'pending': 0, 'total': 0,
                               'skipped': 0}   # [v6] 上限跳过的任务另计，别混进 failed
+        self._reset_stall_watch()
         # [v2.19.9] 每域视频上限的告警**每域只说一次**：超限的视频可能有很多个，
         # 逐个告警会把日志刷满（本工程吃过日志噪音的亏）。
         self._video_cap_warned: set = set()
+
+    # ════════════════════════════════════════════════════════════════════
+    # [N-2] 「空转无告警」检测 —— 真机 2026-10-05 整个爬虫**空转 34 分钟**
+    #
+    # 症状：心跳一直打 `100.0% done=323 fail=103`，`fail` 还在涨，
+    #      却**没有任何"卡住了"的信号**，最后靠人盯着日志才发现、杀掉。
+    #      队列库写不进去（database is locked）⇒ 每页都"落库失败 → 按失败处理
+    #      → 重试 → 又锁 → 又失败"⇒ 34 分钟零产物。
+    #
+    # ⇒ 要修的是**发现能力**：比 bug 本身更贵的，是没人知道它坏了。
+    #
+    # 判据（两个条件同时成立才算卡死，缺一不可）：
+    #   ① 连续 T 秒（默认 180，可配 `stall_alert_seconds`，0=关闭）`done` 不增长；
+    #   ② 同一段时间里 `failed` **在增长**。
+    # 只有 ① 是"这批页面很慢/很大"，不是卡死；只有 ② 是"在正常失败"，
+    # 不代表失败循环。①②合起来才是那次真机的形状。
+    #
+    # ⚠️ 两个计数**故意取自不同源**，理由见 `_stall_watch` 的 docstring。
+    # ════════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════════════
+    # [N-3] 「限定同站/同域」开关（**默认关**）
+    #
+    # 真机症状（2026-10-05，18 集连扒）：种子是 B站番剧页、`-d 6`，
+    # 结果从番剧页一路滚到 microsoft.com / apple.com / bing.com / live.bilibili.com /
+    # manga.bilibili.com 等 30+ 个域名、28 个无关 B站 视频 ——
+    # **页数额度绝大部分喂给了与目标无关的站点**。
+    #
+    # 口径：**同站 = 同一注册域**（`www.` / `manga.` 都算 `bilibili.com`）。
+    # 理由：抓番剧时页内链接本来就在同站各子域之间跳，按**精确主机名**判会把
+    # 这些**自己的**链接也砍掉；而要挡的是滚出站到外国站点那种。
+    # 判定函数 `url_utils.site_of()` 是**唯一实现**（不多处各写一遍 —— cookies
+    # 那条链已经吃过"同一能力两份实现"的亏）。
+    #
+    # ⚠️ **默认关 ⇒ 现有默认行为一字不变**（本工程红线：不擅自改默认行为）。
+    # ════════════════════════════════════════════════════════════════════
+    def set_site_scope(self, seed_urls, extra_domains=None):
+        """按种子算出允许的"站"集合。
+
+        `extra_domains` 可选：额外允许的站（如 `bilibili.com`），用于
+        "种子在 www.、但想连 manga. 一起抓"这类需求；**不传就是只允许种子站**。
+        """
+        from .url_utils import site_of
+        scope = set()
+        for su in (seed_urls or []):
+            s = site_of(su)
+            if s:
+                scope.add(s)
+        for d in (extra_domains or []):
+            s = site_of(d)
+            if s:
+                scope.add(s)
+        self._site_scope = scope
+        if self._same_site_only:
+            logger.info(f"限定同站已开启：只跟 {sorted(scope) or '(种子无法判定站点)'} 同站的链接"
+                        f"（跨站链接不入队，跳过数量会在收尾时汇总）")
+        return scope
+
+    def note_cross_site_skipped(self, site: str, url: str = ""):
+        """记一笔"因同站闸被拦下"——**带数量**（红线：任何丢弃都要说清楚）。
+
+        这里只计数不逐条打日志：一次抓取能跳出上万个跨站链接，逐条打会把日志刷爆
+        （本工程吃过日志噪音的亏）；**收尾时按站汇总打一条**。
+        """
+        self._cross_site_skipped += 1
+        if site:
+            self._cross_site_domains[site] = self._cross_site_domains.get(site, 0) + 1
+
+    def log_cross_site_summary(self):
+        """收尾汇总：跨站链接一共拦了多少、按哪些站分的。**不静默**。"""
+        if not self._same_site_only or not self._cross_site_skipped:
+            return
+        top = sorted(self._cross_site_domains.items(), key=lambda kv: -kv[1])[:10]
+        logger.info(
+            f"限定同站：共拦下 {self._cross_site_skipped} 条跨站链接（未入队）。"
+            f"按站 top10：{', '.join(f'{d}×{n}' for d, n in top)}"
+            + ("…" if len(self._cross_site_domains) > 10 else ""))
+
+    def _reset_stall_watch(self):
+        """（重新）开始观察：`stall_alert` 是**对外可读状态**，测试与 GUI 都读它 ——
+        判据查结构不查文本：断言日志文案会在改措辞时静默失效（本工程真发生过）。"""
+        self.stall_alert = None            # None=正常；dict=当前处于告警中（见字段说明）
+        self._stall_done_ref = 0           # 上一次"有进展"时的 done 值
+        self._stall_failed_ref = 0         # 上一次观察到的 failed 值
+        self._stall_failed_at_start = 0    # 本轮停滞开始时的 failed 值（算增量的基准）
+        self._stall_progress_ts = time.monotonic()   # 上一次 done 增长的时刻
+        self._stall_alert_ts = 0.0         # 上一次**发告警**的时刻（限流用）
+
+    async def _stall_watch(self, done: int, failed: int) -> bool:
+        """喂一次权威计数，判定是否卡死。**返回本次是否新置位了告警**。
+
+        ⚠️ 为什么 `done` 与 `failed` 取自**不同源**（这是实测逼出来的，不是随意）：
+          · `done` 取 **frontier 权威计数**（`status='done'`）—— 它就是"结果真的
+            落盘了"这件事本身。内存计数在落库失败时**照样会涨**（`page_processor`
+            先 `mark_done_checked` 后无条件 `_update_progress('done')`），
+            用它判"卡死"会看不见那次真机故障。
+          · `failed` 取 **`_progress['failed']`** —— 因为**全仓没有任何代码把
+            `frontier.status` 置为 `'failed'`**（`mark_failed` 只写 `retry`/`dead`），
+            库里根本没有这个计数。真机那次心跳显示的 `fail=103` 就是这个内存计数器
+            （`run_crawler._progress_display` 的 `counts.get("failed", f)` 恒走回退）。
+            若照搬 `counts['failed']`，它永远是 0 ⇒ **这条告警永远不会触发**。
+
+        发告警的频次上限 = T（每 T 秒最多一条），避免长故障刷屏；`done` 一恢复
+        就发一条 INFO 并清空 `stall_alert`。
+        """
+        T = _safe_int_cfg(self.cfg.get("stall_alert_seconds", 180), 180)
+        if T <= 0:
+            return False                       # 显式关闭（0 = 不要这条告警）
+        now = time.monotonic()
+        done, failed = int(done), int(failed)
+        if done > self._stall_done_ref:
+            # 有进展 —— 若刚才在告警，这就是恢复
+            if self.stall_alert is not None:
+                logger.info(
+                    f"已恢复：done 重新增长（{self._stall_done_ref} → {done}），"
+                    f"此前停滞告警持续 {int(now - self._stall_progress_ts)} 秒")
+                self.stall_alert = None
+            self._stall_done_ref = done
+            self._stall_failed_ref = failed
+            self._stall_failed_at_start = failed
+            self._stall_progress_ts = now
+            return False
+        # done 没长。以下两条推进基准的更新**先于**任何 return，
+        # 否则 failed 的增量会在"未到阈值"的分支里被悄悄抹平（告警永远算不出增量）。
+        _delta_since_ref = failed - self._stall_failed_ref
+        self._stall_failed_ref = failed
+        if _delta_since_ref <= 0:
+            return False                       # failed 也没涨 → 只是慢，不是卡死
+        elapsed = now - self._stall_progress_ts
+        if elapsed < T:
+            return False                       # 还没到阈值
+        if self.stall_alert is not None and now - self._stall_alert_ts < T:
+            return False                       # 限流：每 T 秒最多一条，不刷屏
+        last_url = ""
+        try:
+            last_url = await self.frontier.last_done_url()
+        except Exception as _ue:
+            # 取不到"最近一次成功"**不该压掉这条告警**——那正是最该喊的时刻。
+            logger.debug(f"取最近一次成功 URL 失败（告警照发）: {_ue}")
+        _failed_delta = failed - self._stall_failed_at_start
+        self._stall_alert_ts = now
+        self._stall_failed_at_start = failed
+        self.stall_alert = {
+            "threshold_seconds": T,
+            "duration": int(elapsed),
+            "failed_delta": int(_failed_delta),
+            "last_done_url": last_url,
+            "done": done,
+            "failed": failed,
+            "raised_at": now,
+        }
+        logger.error(
+            f"⚠️ 疑似卡死：连续 {int(elapsed)} 秒没有任何页面成功落盘（done 卡在 {done}），"
+            f"同期失败数从 {failed - _failed_delta} 涨到 {failed}（+{_failed_delta}）。"
+            f"最近一次成功：{last_url or '(未知——本次任务尚无成功落盘)'}。"
+            "建议：疑似落库失败/被限流循环 —— 请查 logs\\crawl.log 里的 "
+            "'database is locked' 与 'mark_done_checked'；确认后可直接 Ctrl+C 中止"
+            "（已落盘的页面不会丢）。")
+        return True
 
     def _init_enhancements(self):
         # [FIXED & MODIFIED] IntelligentParser 已移除（LLM 模块删除的连带——死代码，从不被调用）
@@ -747,6 +914,9 @@ class Crawler:
 
         self._progress = {'done': 0, 'failed': 0, 'pending': 0, 'total': 0,
                               'skipped': 0}   # [v6] 上限跳过的任务另计，别混进 failed
+        # [N-2] 每次开跑重置停滞观察：不重置的话上一轮的 `stall_alert` 会一直挂着
+        # （`_stall_done_ref` 也停在上一轮的终值，本轮 done 一开始就"不大于"它）。
+        self._reset_stall_watch()
         # [v2.19.9] 每次爬取重新计：每域上限的告警在**本次任务**里只出现一次
         self._video_cap_warned = set()
         # [v2.17 E-P1-5] 在线指纹更新（默认关；开启后任务启动时尝试一次 curl-cffi
@@ -774,6 +944,8 @@ class Crawler:
         logger.info("Setup complete.")
 
     async def run(self, seed_urls: List[str]):
+        # [N-3] 先算出允许的"站"（**必须在种子入队之前** —— 种子自身当然属于它的站）
+        self.set_site_scope(seed_urls, self.cfg.get("same_site_domains"))
         # Checkpoint resume
         from .enhancements import CrawlCheckpoint
         checkpoint = CrawlCheckpoint(self.project.dir / "checkpoint.json")
@@ -1170,11 +1342,27 @@ class Crawler:
                 # [FIXED & MODIFIED] v2.16 修复：原块 time.time() 在无模块级 import time 时
                 # 恒 NameError → 文件恒 0 字节（v2.15 遗留）；计数改采 frontier 权威值
                 # （_progress 的 pending/total 从不更新 → GUI 进度条恒跳 100%）。
+                # 先给默认值：取数本身若失败，下面那次 `_stall_watch` 也得有数可喂
+                # （否则 NameError 会被当成"卡死观察异常"逐批刷屏 —— 那比不观察更吵）。
+                _done, _failed = 0, 0
+                _counts_ok = False
                 try:
                     _c = await self.frontier.get_counts()
-                    _done, _failed = _c.get("done", 0), _c.get("failed", 0)
+                    _counts_ok = True
+                    _done = _c.get("done", 0)
+                    # [N-2 修复·**顺带挖出的真缺陷**] 原来这里是
+                    # `_failed = _c.get("failed", 0)` —— 而**全仓没有任何代码把
+                    # `frontier.status` 置为 'failed'**（`mark_failed` 只写 retry/dead，
+                    # 唯一写 'failed' 的是 `video_downloads` 那张**别的**表）⇒
+                    # 这个值**恒为 0**，stats.jsonl 的 failed 列因此一直是 0，
+                    # GUI/dashboard 读到的失败数是假的。
+                    # 口径对齐心跳 `run_crawler._progress_display` 的 `counts.get("failed", f)`：
+                    # 库里有就用库里的，没有就**回退内存计数器**（那才是真在涨的那个数）。
+                    _failed = _c.get("failed", int(self._progress.get("failed", 0)))
                     _pending = _c.get("pending", 0) + _c.get("retry", 0)
-                    _total = _done + _failed + _pending + _c.get("dead", 0)
+                    # ⚠️ `_total` 仍是**各 status 之和**（真实规模）：`_failed` 现在可能来自
+                    #    内存计数器，与库里的行**不是一回事**，加进来会把规模算大。
+                    _total = _done + _c.get("failed", 0) + _pending + _c.get("dead", 0)
                     # [v2.17 4.2] videos/bytes 采 frontier 权威值（video_downloads completed
                     # 计数+file_size 累计）；images 为页内成图累计计数（避免每批全表扫描）
                     _vs = await self.frontier.get_video_stats()
@@ -1186,6 +1374,16 @@ class Crawler:
                         logger.warning("stats.jsonl 写入失败")
                 except Exception as _se:
                     logger.warning(f"stats.jsonl 写入失败: {_se}")
+                # [N-2] 卡死观察：**独立 try**，不塞进上面那个 stats 块 ——
+                # 那块的 except 会把任何异常都说成"stats.jsonl 写入失败"，
+                # 而停滞观察抛异常（哪怕只是它自己 unforeseen 的 bug）会被**误报**成
+                # 另一个完全不同的问题 ⇒ 排查被带偏，正是本工程最吃过亏的一类错。
+                # 放在块外、复用同一批已取到的权威计数（口径与 stats 行完全一致）。
+                try:
+                    if _counts_ok:
+                        await self._stall_watch(_done, _failed)
+                except Exception as _wse:
+                    logger.error(f"卡死观察自身异常（本轮不判定，监控不能反过来打断抓取）: {_wse}")
         except asyncio.CancelledError:
             logger.info("Cancelled")
         finally:
@@ -1212,11 +1410,20 @@ class Crawler:
                 checkpoint.save({"done": _c.get("done", 0), "pending": _c.get("pending", 0) + _c.get("retry", 0)})
             except Exception:
                 pass
+            # [N-3] 跨站链接汇总（**不静默**：被闸拦下多少条、按哪些站分的）
+            try:
+                self.log_cross_site_summary()
+            except Exception as _cse:
+                logger.debug(f"跨站汇总失败（不影响收尾）: {_cse}")
             try:
                 _c = await self.frontier.get_counts()
-                _done, _failed = _c.get("done", 0), _c.get("failed", 0)
+                _done = _c.get("done", 0)
+                # [N-2 修复] 与主循环同一口径：库里没有 'failed' 状态 ⇒ 回退内存计数器。
+                # ⚠️ 这份**最终快照**是 GUI 收尾时读的那一份 —— 口径错了等于
+                # "任务结束时显示的失败数是 0"。
+                _failed = _c.get("failed", int(self._progress.get("failed", 0)))
                 _pending = _c.get("pending", 0) + _c.get("retry", 0)
-                _total = _done + _failed + _pending + _c.get("dead", 0)
+                _total = _done + _c.get("failed", 0) + _pending + _c.get("dead", 0)
                 _vs = await self.frontier.get_video_stats()
                 if not append_stats_line(self.project.dir / "stats.jsonl",
                                          _done, _failed, _pending, _total, 0,

@@ -1,5 +1,6 @@
 import time
 import asyncio
+import os
 import random
 import sqlite3
 import aiosqlite
@@ -75,7 +76,7 @@ LEASE_TIMEOUT = 300
 # 当前 schema 版本（迁移链的终点）。新增迁移时：改这里 + 在 _migrate 追加 `if version < N` 块。
 # 测试断言一律引用本常量——v6 落地时就有两处旧用例把 5 硬编码进断言而需要返工，
 # "版本号散落在用例里"是迁移类改动的固定返工源。
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -144,8 +145,39 @@ class FrontierDB:
         self.db_path = db_path
         self._write_queue = asyncio.Queue()
         self._read_conn = None
+        # [N-1 新增] **专用长写连接** + 串行化锁。理由见 `_write_conn` 的说明。
+        self._write_conn = None
+        self._write_lock = asyncio.Lock()
+        # [N-5 新增] WAL checkpoint 守卫的可观测状态（供测试断言"有没有触发过"，
+        # 判据查结构不查日志）。`wal_truncated`=累计成功截断次数，`wal_warned`=是否已告警过。
+        self.wal_checkpoint_count = 0
+        self.wal_checkpoint_failures = 0
+        self.wal_bytes_last = 0
+        self._wal_last_check = 0.0
+        self._wal_batches_since_check = 0
+        self._wal_warned = False
         self._flush_task = None
         self._init_db()
+
+    # ────────────────────────────────────────────────────────────────
+    # [N-1] 为什么必须有**第二条**连接（而不是"把 _read_conn 改成能写就行"）
+    #
+    # 真机症状（2026-10-05，`database is locked` × 659 次 / 连续 34 分钟）：
+    # 全仓三处连接都设了 `PRAGMA busy_timeout=30000`，**但那 30 秒等待形同虚设**。
+    # 原因在 SQLite 的 WAL 语义：**一条已经持有读快照的连接去写，会立刻返回
+    # SQLITE_BUSY，根本不走 busy handler。** 而旧实现里 `mark_done_checked` /
+    # `heartbeat_lease` 偏偏就在那条"名为 `_read_conn`、其实天天在 SELECT、
+    # 长期持有读快照"的连接上执行 UPDATE ⇒ 每次都撞上这条"立即失败"的路径。
+    #
+    # ⇒ 关键不是"再加一条 busy_timeout"，而是**让写者永远不持有读快照**：
+    # 这条专用写连接**只写不读**，于是它去要写锁时是干净的升级路径，
+    # busy_timeout 才真正生效。
+    #
+    # 为什么不用 `_write_queue` 走批量：`mark_done_checked` / `heartbeat_lease`
+    # **必须同步返回结果**（CAS 赢了没有、租约还在不在）—— page_processor 靠
+    # `mark_done_checked` 的三态区分"结果未落盘"与"别人接手了"，这条语义不许动。
+    # ⇒ 批量通道留给"不需要立刻知道结果"的写，专用连接留给"必须同步"的写。
+    # ────────────────────────────────────────────────────────────────
 
     def _init_db(self):
         # [v2.19.9 修复] 注意这个 `with` **只管事务、不管关闭** —— Python 的经典坑。
@@ -267,20 +299,51 @@ class FrontierDB:
             # 存量行由 ALTER 的默认值回填：quota_used=0、last_error_kind=NULL
             # （NULL 表示"从未失败过"，刻意不用非空默认值伪装成"有过记录"）。
             added = ensure_accounts_schema(conn)
-            # PRAGMA 不支持参数绑定；此处取模块级 int 常量，无注入面
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            # PRAGMA 不支持参数绑定；此处取模块级 int 常量，无注入面。
+            # ⚠️ 必须写**字面量 6** 而不是 SCHEMA_VERSION：这一段只负责 v5→v6，
+            #    若写 SCHEMA_VERSION，v5 库会一步跳到最新版本、**跳过后面所有迁移块**。
+            #    （N-2 追加 v7 时实测确认了这个坑 —— 这是迁移链的固定返工源。）
+            conn.execute("PRAGMA user_version = 6")
             logger.info(f"DB 迁移 v5→v6：accounts 补列 {added or '（已是最新）'}")
+        if version < 7:
+            # [N-2 修复] frontier 补 done_at：**"这一页什么时候真正落盘"**。
+            #
+            # 为什么必须有：卡死告警（N-2）要回答"最近一次成功是哪个 URL、什么时候"。
+            # 而在此之前，库里有 `leased_at`（租约发放时刻）却没有"完成时刻"——
+            # 落盘成功与否只能靠调用方的返回值反推，**库里查不出来**。
+            #
+            # ⚠️ 刻意**不**拿 `created_at` 或 `leased_at` 顶替：前者是入队时刻（可能几天前），
+            #    后者是取批时刻（卡死循环里每一批都在刷新）—— 两者都会让"最近一次成功"
+            #    指向一个与事实无关的行。宁可加列，也不给告警喂一个会骗人的数。
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(frontier)")}
+            if "done_at" not in cols:
+                conn.execute("ALTER TABLE frontier ADD COLUMN done_at REAL")
+                # 存量行无法回填（库里没有这个事实）⇒ 留 NULL，
+                # 而 `last_done_url()` 只认非 NULL 行 —— 宁可不报，也不报一个编造的 URL。
+            conn.execute("PRAGMA user_version = 7")
+            logger.info("DB 迁移 v6→v7：frontier 补 done_at（卡死告警的「最近一次成功」判据）")
 
     async def init_async(self):
         self._read_conn = await aiosqlite.connect(self.db_path)
         self._read_conn.row_factory = aiosqlite.Row
         # [v2.19 P1] _read_conn 也要 busy_timeout：flusher 持写锁时，本连接上的
-        # CAS/读取会抛 "database is locked"，而 mark_done_checked 把任何异常都当
-        # "租约已易主"→ 成功页被静默丢弃且不标 done（全仓仅 3 处连接设了该 PRAGMA）。
+        # 读取会抛 "database is locked"（读本身仍走 busy handler，与写不同）。
+        # ⚠️ [N-1] 自 v2 起**这条连接上不再有任何写**（UPDATE 全部迁到 `_write_conn`），
+        #    保留该 PRAGMA 是为了读侧遇到写锁时能等，而不是立刻失败。
         try:
             await self._read_conn.execute("PRAGMA busy_timeout=30000")
         except Exception:
             pass
+        # [N-1] 专用长写连接。**必须在 `_batch_flusher` 起跑之前建好**——
+        # flusher 一开跑就可能立刻要用它（init_async 末尾就往队列里放了清理 DELETE）。
+        self._write_conn = await aiosqlite.connect(self.db_path)
+        self._write_conn.row_factory = aiosqlite.Row
+        try:
+            await self._write_conn.execute("PRAGMA busy_timeout=30000")
+        except Exception as _we:
+            # 建不出写连接 ⇒ 后面所有"必须同步返回"的写都会返回 None（落库失败）。
+            # 这不是静默：每个调用方都会看到 WARNING 并按失败重试。
+            logger.error(f"专用写连接建立失败（同步写将全部落库失败）: {_we}")
         self._flush_task = asyncio.create_task(self._batch_flusher())
         # [v2.16 M6] errors 生命周期：启动清理过期行（默认保留 30 天，可配）
         try:
@@ -293,6 +356,8 @@ class FrontierDB:
     async def _batch_flusher(self):
         while True:
             batch = []
+            # [N-1 修复] 哨兵被"批量排空"顺手捞走时的收尾标志（见下面 drain 里的注释）
+            _stop_after = False
             try:
                 item = await self._write_queue.get()
                 if item is None:
@@ -301,7 +366,20 @@ class FrontierDB:
                     break
                 batch.append(item)
                 while not self._write_queue.empty() and len(batch) < 1000:
-                    batch.append(self._write_queue.get_nowait())
+                    nxt = self._write_queue.get_nowait()
+                    # ── [N-1 修复·**实测复现的挂死**] 排空循环原来**不认哨兵**：
+                    # `close()` 在 flusher 正排空时把 None 塞进队列，它就被顺手 append 进
+                    # batch ⇒ ①`for sql, params in batch` 抛 "cannot unpack non-iterable
+                    # NoneType object"；②异常分支的 `finally` 把它连同整批 task_done 掉
+                    # ⇒ ③下一轮 `await queue.get()` **永远等不到哨兵**
+                    # ⇒ `close()` 里的 `await self._flush_task` **永久挂起**（收尾卡死）。
+                    # 复现方式（一行）：`init_async()` 后立刻 `close()` —— init_async 末尾
+                    # 刚排了一条 errors 清理 DELETE，flusher 排空时正好撞上哨兵。
+                    if nxt is None:
+                        self._write_queue.task_done()   # 已取出 ⇒ 必须自己记账
+                        _stop_after = True              # 本批提交完就退出，别把它当 SQL
+                        break
+                    batch.append(nxt)
 
                 queries = {}
                 for sql, params in batch:
@@ -317,20 +395,26 @@ class FrontierDB:
                 # ⚠️ `_init_db` 早已修过**同一处坑**（`with sqlite3.connect(...)` ⇒ 显式
                 #    `conn.close()`），这里是它的翻版 —— 见到 `with/async with connect`
                 #    一律要问一句"连接谁来关"。
-                db = await aiosqlite.connect(self.db_path)
-                try:
-                    await db.execute("PRAGMA busy_timeout=30000")
+                #
+                # ── [N-1 收敛] 进一步：**不再每批开关一次连接**，改用 `_write_conn`
+                # 这条常驻写连接（与 CAS 写同一把 `_write_lock`）。
+                # 代价（每批一次 BEGIN IMMEDIATE 的锁持有时间略长）换三件事：
+                #   ① 全库写者只剩一个 ⇒ 不再有"两个写连接互撞"的窗口；
+                #   ② 每批不再 create/close 连接与后台线程（v2.19.10 只是把泄漏止住，
+                #      开销仍在；这才是根治）；
+                #   ③ busy_timeout 在这条**从不读**的连接上才真正生效（见 __init__ 说明）。
+                db = self._write_conn
+                if db is None:
+                    # init_async 没跑成/写连接建不出来 ⇒ 本批无处可落。
+                    # **不静默**：走 except 同一条路，死信落盘 + ERROR。
+                    raise RuntimeError("写连接未就绪（init_async 未调用或建连失败）")
+                async with self._write_lock:
                     await db.execute("BEGIN IMMEDIATE")
                     for sql, params_list in queries.items():
                         await db.executemany(sql, params_list)
                     await db.commit()
-                finally:
-                    try:
-                        await db.close()
-                    except Exception:
-                        # 关连接失败**不能掩盖上面真正的异常**（那才是要抛出去的），
-                        # 且连接已在 finally 里尽力关闭 —— 故此处只做"尽力而为"。
-                        pass
+                # [N-5] 提交后再看 WAL —— 放在锁**外面**，别让 checkpoint 拖住 CAS 写
+                await self._maybe_checkpoint_wal()
 
             except Exception as e:
                 logger.error(f"DB Flush Error: {e}")
@@ -351,6 +435,64 @@ class FrontierDB:
                 # 修复：无论成功或失败都调用 task_done，避免队列死锁
                 for _ in batch:
                     self._write_queue.task_done()
+            # [N-1] 哨兵已在 drain 里被取出并记账 ⇒ 本批落库后**必须**退出，
+            # 否则下一轮 `get()` 永远等不到它（close() 就挂在那儿了）。
+            if _stop_after:
+                break
+
+    # ════════════════════════════════════════════════════════════════════
+    # [N-5] WAL checkpoint 守卫
+    #
+    # 真机症状（2026-10-05）：`frontier.db-wal` 一路涨到 **26.9 MB**，
+    # 而**没有任何 checkpoint 策略** —— WAL 只增不减，直到把写锁窗口彻底堵死。
+    #
+    # 判据：每 `wal_checkpoint_batches` 批（默认 200）或每 `wal_checkpoint_seconds`
+    # 秒（默认 60）看一次 `-wal` 文件大小；超过 `wal_checkpoint_bytes`
+    # （默认 8 MB）就 `PRAGMA wal_checkpoint(TRUNCATE)`。
+    #
+    # ⚠️ **失败不许抛**：checkpoint 失败只是退化成"WAL 继续变大"，
+    #    为此打断整个刷批循环是本末倒置。但**必须打 WARNING**——
+    #    连续几十次静默失败就等于回到了 26.9 MB 那天的老路。
+    # ════════════════════════════════════════════════════════════════════
+    async def _maybe_checkpoint_wal(self):
+        """节流版 WAL checkpoint。返回本次是否真的执行了 checkpoint。"""
+        n_batches = int(getattr(self, "wal_checkpoint_batches", 0) or 0) or 200
+        n_seconds = float(getattr(self, "wal_checkpoint_seconds", 0) or 0) or 60.0
+        limit = int(getattr(self, "wal_checkpoint_bytes", 0) or 0) or (8 * 1024 * 1024)
+        now = time.monotonic()
+        last = getattr(self, "_wal_last_check", 0.0)
+        n_since = int(getattr(self, "_wal_batches_since_check", 0) or 0) + 1
+        self._wal_batches_since_check = n_since
+        if n_since < n_batches and (now - last) < n_seconds:
+            return False                      # 节流：还没到检查点
+        self._wal_batches_since_check = 0
+        self._wal_last_check = now
+        try:
+            size = os.path.getsize(str(self.db_path) + "-wal")
+        except OSError:
+            return False                      # 还没有 WAL 文件 ⇒ 无事可做（不是错误）
+        self.wal_bytes_last = size
+        if size <= limit:
+            return False
+        try:
+            async with self._write_lock:
+                cur = await self._write_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                row = await cur.fetchone()
+            self.wal_checkpoint_count += 1
+            # (busy, log, checkpointed)：busy>0 说明有读者占着快照，本轮没能截断
+            logger.info(f"WAL 守卫：{size / 1048576:.1f} MB > {limit / 1048576:.0f} MB "
+                        f"→ wal_checkpoint(TRUNCATE) 完成 {row[0] if row else '?'}")
+            return True
+        except Exception as _ce:
+            self.wal_checkpoint_failures += 1
+            # 首次失败 WARNING，其后降 DEBUG —— 既不刷屏，也不让它变成"静默"
+            if not getattr(self, "_wal_warned", False):
+                logger.warning(f"WAL checkpoint 失败（WAL 将继续变大，本条非致命）: "
+                               f"{type(_ce).__name__}: {_ce}")
+                self._wal_warned = True
+            else:
+                logger.debug(f"WAL checkpoint 再次失败（累计 {self.wal_checkpoint_failures} 次）: {_ce}")
+            return False
 
     async def push(self, url, depth=0, priority=5, force=False, parent_hash=None):
         # ════════════════════════════════════════════════════════════════════
@@ -461,26 +603,57 @@ class FrontierDB:
           供"本任务无租约"（leased_at 为 None）与内部维护路径使用。
         """
         if leased_at is None:
+            # [N-2] done_at 一并落库：与 CAS 路径写同一个事实，卡死告警才不会因
+            # "走了无租约分支"而漏掉最后一条成功记录。
             await self._write_queue.put(
-                ("UPDATE frontier SET status='done', throttle_count=0 WHERE url_hash=?", (url_hash,)))
+                ("UPDATE frontier SET status='done', throttle_count=0, done_at=? WHERE url_hash=?",
+                 (time.time(), url_hash)))
             return True
         return await self.mark_done_checked(url_hash, leased_at)
+
+    async def last_done_url(self) -> str:
+        """[N-2 新增] **最近一次真正落盘的 URL**（按 done_at 倒序），供卡死告警指名道姓。
+
+        返回空串的情形都是"如实说不知道"，不允许拿别的行顶替：
+          · 未 `init_async` → 连接没就绪；
+          · 库里 `done_at` 全为 NULL（v6 旧库刚迁移上来，还没落过一页）→ 没有事实可指；
+          · 查询异常 → 查不到。
+
+        ⚠️ 只读（`_read_conn` 纯读，见 `_write_lock` 的说明）⇒ 永不与写者抢锁。
+        """
+        if self._read_conn is None:
+            return ""
+        try:
+            async with self._read_conn.execute(
+                    "SELECT normalized_url FROM frontier WHERE status='done' "
+                    "AND done_at IS NOT NULL ORDER BY done_at DESC LIMIT 1") as cur:
+                row = await cur.fetchone()
+            return str(row[0]) if row and row[0] else ""
+        except Exception as e:
+            # 查不到"最近成功"不影响告警本身（那条 ERROR 仍要发）——降级为空串并留 debug。
+            logger.debug(f"last_done_url 取值失败（告警将不含该字段）: {e}")
+            return ""
 
     async def heartbeat_lease(self, url_hash, leased_at) -> bool:
         """[v2.18 P1-3] 租约心跳续期：处理中周期性延长 lease_expires，防止单页
         最坏处理时长（human_delay+渲染+媒体）超 LEASE_TIMEOUT(300s) 被回收重发
         → 同 URL 双协程并发处理（媒体/导出双份）。
         CAS 校验 leased_at（只认当前持有者）；不改 leased_at 本身——mark_done_checked
-        的 CAS 闭环不受影响。租约已易主返回 False（调用方停止续租）。"""
-        if self._read_conn is None:
+        的 CAS 闭环不受影响。租约已易主返回 False（调用方停止续租）。
+
+        [N-1] 写已从 `_read_conn` 迁到**专用写连接** `_write_conn`：
+        旧实现在这条天天 SELECT、长期持有读快照的连接上 UPDATE ⇒ WAL 下直接
+        SQLITE_BUSY（不走 busy handler），真机 34 分钟锁死。"""
+        if self._write_conn is None:
             return False
         try:
-            cur = await self._read_conn.execute(
-                "UPDATE frontier SET lease_expires=? WHERE url_hash=? "
-                "AND status='leased' AND leased_at=?",
-                (time.time() + LEASE_TIMEOUT, url_hash, leased_at))
-            await self._read_conn.commit()
-            return (cur.rowcount or 0) > 0
+            async with self._write_lock:
+                cur = await self._write_conn.execute(
+                    "UPDATE frontier SET lease_expires=? WHERE url_hash=? "
+                    "AND status='leased' AND leased_at=?",
+                    (time.time() + LEASE_TIMEOUT, url_hash, leased_at))
+                await self._write_conn.commit()
+                return (cur.rowcount or 0) > 0
         except Exception:
             return False
 
@@ -493,17 +666,22 @@ class FrontierDB:
           True  = 赢得 CAS（状态已置 done）
           False = 租约确实已易主（新持有者在跑，本结果应丢弃）
           None  = CAS 落库失败（DB/磁盘异常），结果**未落盘**，调用方应视为失败重试
+        [N-1] 写已从 `_read_conn`（名为只读、实则天天 UPDATE）迁到**专用写连接**
+        `_write_conn`，并与 flusher 共用 `_write_lock` 串行化。
+        ⚠️ **三态语义一字未改** —— page_processor 靠它区分"结果未落盘"与"别人接手了"，
+        这条不许为了"更好写"而合并（v2.19.6 刚把它从 False 拆出来）。
         """
-        if self._read_conn is None:
+        if self._write_conn is None:
             return None                      # 连接未就绪 = 无法落库（非租约易主）
         for _attempt in range(2):
             try:
-                cur = await self._read_conn.execute(
-                    "UPDATE frontier SET status='done', throttle_count=0 "
-                    "WHERE url_hash=? AND status='leased' AND leased_at=?",
-                    (url_hash, leased_at))
-                await self._read_conn.commit()
-                return (cur.rowcount or 0) > 0
+                async with self._write_lock:
+                    cur = await self._write_conn.execute(
+                        "UPDATE frontier SET status='done', throttle_count=0, done_at=? "
+                        "WHERE url_hash=? AND status='leased' AND leased_at=?",
+                        (time.time(), url_hash, leased_at))
+                    await self._write_conn.commit()
+                    return (cur.rowcount or 0) > 0
             except Exception as e:
                 _msg = str(e).lower()
                 if _attempt == 0 and ("locked" in _msg or "busy" in _msg):
@@ -794,8 +972,16 @@ class FrontierDB:
         # 已退出），且重复关 _read_conn 不报错但语义混乱。flush_task 置 None 后二次调用零动作。
         if self._flush_task:
             await self._write_queue.put(None)
-            await self._flush_task
+            await self._flush_task          # [N-1 修复] 这里曾可能**永久挂起**（见 flusher 的排空注释）
             self._flush_task = None
+        if self._write_conn:
+            # [N-1] 写连接也必须显式关（aiosqlite 每条连接一个后台线程）——
+            # 漏关就是 v2.19.10 那类泄漏的翻版。
+            try:
+                await self._write_conn.close()
+            except Exception as _ce:
+                logger.debug(f"关闭写连接失败（不影响收尾）: {_ce}")
+            self._write_conn = None
         if self._read_conn:
             await self._read_conn.close()
             self._read_conn = None
